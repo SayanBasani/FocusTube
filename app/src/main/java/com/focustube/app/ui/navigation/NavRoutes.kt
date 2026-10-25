@@ -6,6 +6,7 @@ sealed class Screen(val route: String) {
     object Following : Screen("following")
     object Library : Screen("library")
     object Focus : Screen("focus")
+    object About : Screen("about")
     object Reels : Screen("reels")
     object Player : Screen("player/{videoId}") {
         fun createRoute(videoId: String) = "player/$videoId"

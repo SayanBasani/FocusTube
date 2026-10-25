@@ -1,49 +1,35 @@
-
-@'
-# Gradle caches and build outputs
+﻿# Gradle and Kotlin build output
 .gradle/
-build/
-**/build/
 .kotlin/
+**/build/
 
 # Local machine configuration
 local.properties
-.env
-.env.*
-!.env.example
 
-# Android Studio / IntelliJ
+# IDE files
 .idea/
 *.iml
 out/
 
-# OS files
-.DS_Store
-Thumbs.db
-Desktop.ini
-
-# Logs and temporary files
-*.log
-*.tmp
-*.temp
-
-# Secrets and signing keys
+# Environment and secrets
+.env
+.env.*
+!.env.example
 *.jks
 *.keystore
 keystore.properties
 
-# Generated Android artifacts
+# OS and temporary files
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.log
+*.tmp
+*.temp
+
+# Generated APK and AAB files
 *.apk
 *.aab
-*.dex
-'@ | Set-Content -Encoding utf8 .gitignore
 
-# Generated UI screenshots and inspection dumps
+# Generated screenshots and inspection artifacts
 /artifacts/
-
-# Android build output and local configuration
-.gradle/
-.kotlin/
-**/build/
-local.properties
-.idea/
