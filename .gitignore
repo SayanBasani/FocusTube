@@ -37,3 +37,13 @@ keystore.properties
 *.aab
 *.dex
 '@ | Set-Content -Encoding utf8 .gitignore
+
+# Generated UI screenshots and inspection dumps
+/artifacts/
+
+# Android build output and local configuration
+.gradle/
+.kotlin/
+**/build/
+local.properties
+.idea/
