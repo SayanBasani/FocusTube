@@ -102,11 +102,9 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.unit.Dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -145,25 +143,20 @@ import kotlin.math.abs
 @OptIn(ExperimentalMaterial3Api::class)
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun UnifiedPlayerHost(
+fun PlayerScreen(
+    videoId: String,
     viewModel: PlayerViewModel,
     isPiPMode: Boolean = false,
-    bottomBarHeight: Dp = 80.dp,
-    onNavigateToChannel: (String, String) -> Unit = { _, _ -> },
-    onNavigateToVideo: (String) -> Unit = { viewModel.openVideo(it) }
+    onBack: () -> Unit,
+    onNavigateToVideo: (String) -> Unit = {},
+    onNavigateToChannel: (String, String) -> Unit = { _, _ -> }
 ) {
-    val uiState by viewModel.uiState.collectAsState()
-    if (uiState.sheetState == PlayerSheetState.HIDDEN) {
-        return
-    }
-
-    val videoId = uiState.videoId
-
     val context = LocalContext.current
     val activity = context as? Activity
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
+    val uiState by viewModel.uiState.collectAsState()
     val preferences by viewModel.preferences.collectAsState()
     val subscriptions by viewModel.subscriptions.collectAsState()
     val watchLaterList by viewModel.watchLater.collectAsState()
@@ -172,27 +165,14 @@ fun UnifiedPlayerHost(
     var customView by remember { mutableStateOf<View?>(null) }
     var customViewCallback by remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
 
-    // Overlay auto-hide state
+    // Overlay auto-hide state (Section 2)
     var controlsVisible by remember { mutableStateOf(true) }
     var isUserInteracting by remember { mutableStateOf(false) }
 
-    // Video ID change and loading synchronization
-    var lastLoadedVideoId by remember { mutableStateOf("") }
-    LaunchedEffect(uiState.videoId) {
-        if (uiState.videoId.isNotEmpty() && uiState.videoId != lastLoadedVideoId) {
-            lastLoadedVideoId = uiState.videoId
-            controlsVisible = true
-            if (webViewRef != null && uiState.isPlayerReady) {
-                webViewRef?.evaluateJavascript(
-                    "if (window.loadNewVideo) { window.loadNewVideo('${uiState.videoId}', ${preferences.autoplay}, ${uiState.currentSpeed}); } else if (window.player && player.loadVideoById) { player.loadVideoById('${uiState.videoId}'); }",
-                    null
-                )
-            } else if (webViewRef != null) {
-                val savedPosition = viewModel.getSavedPositionSeconds()
-                val html = buildEmbedHtml(uiState.videoId, preferences.autoplay, uiState.currentSpeed, savedPosition)
-                webViewRef?.loadDataWithBaseURL("https://www.youtube-nocookie.com", html, "text/html", "UTF-8", null)
-            }
-        }
+    // Start video details loading
+    LaunchedEffect(videoId) {
+        viewModel.loadVideo(videoId)
+        controlsVisible = true
     }
 
     // Auto-hide controls after 3.5 seconds of inactivity when playing
@@ -203,48 +183,11 @@ fun UnifiedPlayerHost(
         }
     }
 
-    fun togglePlayPause() {
-        if (uiState.isPlaying) {
-            webViewRef?.evaluateJavascript("if (window.player && player.pauseVideo) player.pauseVideo();", null)
-            viewModel.setPlayingState(false)
-            FocusTubeMediaService.stopService(context)
-        } else {
-            webViewRef?.evaluateJavascript("if (window.player && player.playVideo) player.playVideo();", null)
-            viewModel.setPlayingState(true)
-        }
-    }
-
-    // Player commands listener (Mini-player controls, lockscreen controls)
-    LaunchedEffect(viewModel) {
-        viewModel.playerCommands.collect { cmd ->
-            when (cmd) {
-                PlayerCommand.PLAY -> {
-                    webViewRef?.evaluateJavascript("if (window.player && player.playVideo) player.playVideo();", null)
-                    viewModel.setPlayingState(true)
-                }
-                PlayerCommand.PAUSE -> {
-                    webViewRef?.evaluateJavascript("if (window.player && player.pauseVideo) player.pauseVideo();", null)
-                    viewModel.setPlayingState(false)
-                }
-                PlayerCommand.TOGGLE_PLAY_PAUSE -> {
-                    togglePlayPause()
-                }
-                PlayerCommand.STOP -> {
-                    try {
-                        webViewRef?.evaluateJavascript("if (window.player && player.stopVideo) player.stopVideo();", null)
-                    } catch (e: Exception) {}
-                    viewModel.setPlayingState(false)
-                    FocusTubeMediaService.stopService(context)
-                }
-            }
-        }
-    }
-
-    // Clean up WebView and service on application scope disposal
-    DisposableEffect(Unit) {
+    // Stop MediaService and clean up WebView on leaving PlayerScreen (Fix for Bug 2)
+    DisposableEffect(videoId) {
         onDispose {
             try {
-                webViewRef?.evaluateJavascript("if (window.player && player.stopVideo) player.stopVideo();", null)
+                webViewRef?.evaluateJavascript("if (window.player && player.pauseVideo) player.pauseVideo();", null)
                 webViewRef?.stopLoading()
                 webViewRef?.destroy()
             } catch (e: Exception) {}
@@ -318,6 +261,17 @@ fun UnifiedPlayerHost(
         if (isLandscape) exitFullscreen() else enterFullscreen()
     }
 
+    fun togglePlayPause() {
+        if (uiState.isPlaying) {
+            webViewRef?.evaluateJavascript("if (window.player && player.pauseVideo) player.pauseVideo();", null)
+            viewModel.setPlayingState(false)
+            FocusTubeMediaService.stopService(context)
+        } else {
+            webViewRef?.evaluateJavascript("if (window.player && player.playVideo) player.playVideo();", null)
+            viewModel.setPlayingState(true)
+        }
+    }
+
     fun seekTo(seconds: Long) {
         viewModel.updatePlaybackPosition(seconds)
         webViewRef?.evaluateJavascript("if (window.player && player.seekTo) player.seekTo($seconds, true);", null)
@@ -328,229 +282,44 @@ fun UnifiedPlayerHost(
         seekTo(target)
     }
 
-    BackHandler(enabled = uiState.sheetState == PlayerSheetState.EXPANDED) {
+    BackHandler {
         if (isLandscape) {
             exitFullscreen()
         } else if (customView != null) {
             customViewCallback?.onCustomViewHidden()
             customView = null
         } else {
-            viewModel.collapsePlayer()
+            onBack()
         }
     }
 
-    // Persistent Movable Video Player Surface (Shared between Full Watch Page and In-App Mini-Player)
-    val videoPlayerContent = remember {
-        movableContentOf { isMini: Boolean, modifier: Modifier ->
-            Box(modifier = modifier) {
-                AndroidView(
-                    factory = { ctx ->
-                        WebView(ctx).apply {
-                            layoutParams = ViewGroup.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.MATCH_PARENT
-                            )
-                            settings.javaScriptEnabled = true
-                            settings.domStorageEnabled = true
-                            settings.mediaPlaybackRequiresUserGesture = false
-                            settings.cacheMode = WebSettings.LOAD_DEFAULT
-
-                            webChromeClient = object : WebChromeClient() {
-                                override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
-                                    customView = view
-                                    customViewCallback = callback
-                                }
-
-                                override fun onHideCustomView() {
-                                    customView = null
-                                    customViewCallback = null
-                                }
-                            }
-
-                            webViewClient = object : WebViewClient() {
-                                override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
-                                    return false
-                                }
-                            }
-
-                            addJavascriptInterface(
-                                FocusTubeBridge(
-                                    onReady = {
-                                        viewModel.setPlayerReady(true)
-                                    },
-                                    onStateChange = { state ->
-                                        when (state) {
-                                            1 -> {
-                                                viewModel.setPlayingState(true)
-                                                viewModel.setBuffering(false)
-                                                viewModel.setPlayerReady(true)
-                                            }
-                                            2 -> {
-                                                viewModel.setPlayingState(false)
-                                                viewModel.setBuffering(false)
-                                            }
-                                            3 -> {
-                                                viewModel.setBuffering(true)
-                                            }
-                                            5 -> {
-                                                viewModel.setPlayerReady(true)
-                                                viewModel.setBuffering(false)
-                                            }
-                                            0 -> {
-                                                viewModel.setPlayingState(false)
-                                                viewModel.setBuffering(false)
-                                                FocusTubeMediaService.stopService(context)
-                                            }
-                                        }
-                                    },
-                                    onTimeUpdate = { cur, dur, loaded ->
-                                        viewModel.updatePlaybackPosition(cur.toLong())
-                                        viewModel.updateDuration(dur.toLong())
-                                        viewModel.updateBufferedFraction(loaded)
-                                        viewModel.savePlaybackPosition(cur.toLong())
-                                    },
-                                    onLiveInfo = { isLive, behindEdge, delta ->
-                                        viewModel.setLiveInfo(isLive, behindEdge, delta)
-                                    }
-                                ),
-                                "FocusTubeBridge"
-                            )
-
-                            if (uiState.videoId.isNotEmpty()) {
-                                val savedPosition = viewModel.getSavedPositionSeconds()
-                                val html = buildEmbedHtml(uiState.videoId, preferences.autoplay, uiState.currentSpeed, savedPosition)
-                                loadDataWithBaseURL("https://www.youtube-nocookie.com", html, "text/html", "UTF-8", null)
-                            }
-                            webViewRef = this
-                        }
-                    },
-                    update = { wv ->
-                        webViewRef = wv
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
-
-                // Overlays only displayed in full watch page (not mini-player)
-                if (!isMini) {
-                    // Loading / Buffering indicator over WebView
-                    if (!uiState.isPlayerReady || uiState.isBuffering) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(Color.Black.copy(alpha = 0.35f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            CircularProgressIndicator(
-                                color = Color.White,
-                                strokeWidth = 3.dp,
-                                modifier = Modifier.size(44.dp)
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        if (customView != null) {
+            AndroidView(
+                factory = { customView!! },
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Column(modifier = Modifier.fillMaxSize()) {
+                // 1. Compact Top Toolbar (Portrait only, uncrowded single settings button)
+                if (!isLandscape && !isPiPMode) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        IconButton(onClick = onBack) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                                tint = MaterialTheme.colorScheme.onBackground
                             )
                         }
-                    }
-
-                    // Persistent thin 2 dp red progress line at the very bottom when controls are hidden
-                    if (!controlsVisible && !isPiPMode && uiState.durationSeconds > 0 && !uiState.isLive) {
-                        val progress = (uiState.currentPositionSeconds.toFloat() / uiState.durationSeconds).coerceIn(0f, 1f)
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .align(Alignment.BottomStart)
-                                .height(2.dp)
-                                .background(Color.White.copy(alpha = 0.2f))
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth(progress)
-                                    .fillMaxHeight()
-                                    .background(Color.Red)
-                            )
-                        }
-                    }
-
-                    // Tapping player area when controls are hidden reveals controls
-                    if (!controlsVisible && !isPiPMode) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .clickable(
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = null
-                                ) {
-                                    controlsVisible = true
-                                }
-                        )
-                    }
-
-                    // Application-Controlled Overlay: Auto-hides on inactivity
-                    if (!isPiPMode) {
-                        VideoPlayerControlsOverlay(
-                            visible = controlsVisible,
-                            videoTitle = uiState.video?.title ?: "",
-                            isLandscape = isLandscape,
-                            isPlaying = uiState.isPlaying,
-                            isPlayerReady = uiState.isPlayerReady,
-                            currentPositionSeconds = uiState.currentPositionSeconds,
-                            durationSeconds = uiState.durationSeconds,
-                            bufferedFraction = uiState.bufferedFraction,
-                            thickness = preferences.progressBarThickness,
-                            isLive = uiState.isLive,
-                            isBehindLiveEdge = uiState.isBehindLiveEdge,
-                            onGoLive = {
-                                webViewRef?.evaluateJavascript(
-                                    "if (window.player && player.getSeekableRange) { var r = player.getSeekableRange(); if (r && r.end) player.seekTo(r.end, true); }",
-                                    null
-                                )
-                            },
-                            onBackClick = { exitFullscreen() },
-                            onSettingsClick = { viewModel.setSettingsSheetOpen(true) },
-                            onSeekRelative = { delta -> seekRelative(delta) },
-                            onSeekTo = { pos -> seekTo(pos) },
-                            onTogglePlayPause = { togglePlayPause() },
-                            onToggleFullscreen = { toggleFullscreen() },
-                            onOverlayClick = { controlsVisible = false }
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    if (isPiPMode) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black)
-        ) {
-            videoPlayerContent(true, Modifier.fillMaxSize())
-        }
-    } else if (uiState.sheetState == PlayerSheetState.EXPANDED) {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.background
-        ) {
-            if (customView != null) {
-                AndroidView(
-                    factory = { customView!! },
-                    modifier = Modifier.fillMaxSize()
-                )
-            } else {
-                Column(modifier = Modifier.fillMaxSize()) {
-                    // 1. Compact Top Toolbar (Portrait only, uncrowded single settings button)
-                    if (!isLandscape && !isPiPMode) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 8.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            IconButton(onClick = { viewModel.collapsePlayer() }) {
-                                Icon(
-                                    imageVector = Icons.Default.KeyboardArrowDown,
-                                    contentDescription = "Collapse Player",
-                                    tint = MaterialTheme.colorScheme.onBackground
-                                )
-                            }
 
                         // App / Focus Brand Pill
                         Row(
@@ -637,7 +406,167 @@ fun UnifiedPlayerHost(
                             )
                         }
                 ) {
-                    videoPlayerContent(false, Modifier.fillMaxSize())
+                    // Underneath: Clean Privacy Player Embed
+                    AndroidView(
+                        factory = { ctx ->
+                            WebView(ctx).apply {
+                                layoutParams = ViewGroup.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT
+                                )
+                                settings.javaScriptEnabled = true
+                                settings.domStorageEnabled = true
+                                settings.mediaPlaybackRequiresUserGesture = false
+                                settings.cacheMode = WebSettings.LOAD_DEFAULT
+
+                                webChromeClient = object : WebChromeClient() {
+                                    override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+                                        customView = view
+                                        customViewCallback = callback
+                                    }
+
+                                    override fun onHideCustomView() {
+                                        customView = null
+                                        customViewCallback = null
+                                    }
+                                }
+
+                                webViewClient = object : WebViewClient() {
+                                    override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+                                        return false
+                                    }
+                                }
+
+                                addJavascriptInterface(
+                                    FocusTubeBridge(
+                                        onReady = {
+                                            viewModel.setPlayerReady(true)
+                                        },
+                                        onStateChange = { state ->
+                                            when (state) {
+                                                1 -> {
+                                                    viewModel.setPlayingState(true)
+                                                    viewModel.setBuffering(false)
+                                                    viewModel.setPlayerReady(true)
+                                                }
+                                                2 -> {
+                                                    viewModel.setPlayingState(false)
+                                                    viewModel.setBuffering(false)
+                                                }
+                                                3 -> {
+                                                    viewModel.setBuffering(true)
+                                                }
+                                                5 -> {
+                                                    viewModel.setPlayerReady(true)
+                                                    viewModel.setBuffering(false)
+                                                }
+                                                0 -> {
+                                                    viewModel.setPlayingState(false)
+                                                    viewModel.setBuffering(false)
+                                                    FocusTubeMediaService.stopService(context)
+                                                }
+                                            }
+                                        },
+                                        onTimeUpdate = { cur, dur, loaded ->
+                                            viewModel.updatePlaybackPosition(cur.toLong())
+                                            viewModel.updateDuration(dur.toLong())
+                                            viewModel.updateBufferedFraction(loaded)
+                                            viewModel.savePlaybackPosition(cur.toLong())
+                                        },
+                                        onLiveInfo = { isLive, behindEdge, delta ->
+                                            viewModel.setLiveInfo(isLive, behindEdge, delta)
+                                        }
+                                    ),
+                                    "FocusTubeBridge"
+                                )
+
+                                val savedPosition = viewModel.getSavedPositionSeconds()
+                                val html = buildEmbedHtml(videoId, preferences.autoplay, uiState.currentSpeed, savedPosition)
+                                loadDataWithBaseURL("https://www.youtube-nocookie.com", html, "text/html", "UTF-8", null)
+                                webViewRef = this
+                            }
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+
+                    // Loading / Buffering indicator over WebView
+                    if (!uiState.isPlayerReady || uiState.isBuffering) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.35f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(
+                                color = Color.White,
+                                strokeWidth = 3.dp,
+                                modifier = Modifier.size(44.dp)
+                            )
+                        }
+                    }
+
+                    // Persistent thin 2 dp red progress line at the very bottom when controls are hidden
+                    if (!controlsVisible && !isPiPMode && uiState.durationSeconds > 0 && !uiState.isLive) {
+                        val progress = (uiState.currentPositionSeconds.toFloat() / uiState.durationSeconds).coerceIn(0f, 1f)
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .align(Alignment.BottomStart)
+                                .height(2.dp)
+                                .background(Color.White.copy(alpha = 0.2f))
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth(progress)
+                                    .fillMaxHeight()
+                                    .background(Color.Red)
+                            )
+                        }
+                    }
+
+                    // Tapping player area when controls are hidden reveals controls
+                    if (!controlsVisible && !isPiPMode) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) {
+                                    controlsVisible = true
+                                }
+                        )
+                    }
+
+                    // Application-Controlled Overlay: Auto-hides on inactivity
+                    if (!isPiPMode) {
+                        VideoPlayerControlsOverlay(
+                            visible = controlsVisible,
+                            videoTitle = uiState.video?.title ?: "",
+                            isLandscape = isLandscape,
+                            isPlaying = uiState.isPlaying,
+                            isPlayerReady = uiState.isPlayerReady,
+                            currentPositionSeconds = uiState.currentPositionSeconds,
+                            durationSeconds = uiState.durationSeconds,
+                            bufferedFraction = uiState.bufferedFraction,
+                            thickness = preferences.progressBarThickness,
+                            isLive = uiState.isLive,
+                            isBehindLiveEdge = uiState.isBehindLiveEdge,
+                            onGoLive = {
+                                webViewRef?.evaluateJavascript(
+                                    "if (window.player && player.getSeekableRange) { var r = player.getSeekableRange(); if (r && r.end) player.seekTo(r.end, true); }",
+                                    null
+                                )
+                            },
+                            onBackClick = { exitFullscreen() },
+                            onSettingsClick = { viewModel.setSettingsSheetOpen(true) },
+                            onSeekRelative = { delta -> seekRelative(delta) },
+                            onSeekTo = { pos -> seekTo(pos) },
+                            onTogglePlayPause = { togglePlayPause() },
+                            onToggleFullscreen = { toggleFullscreen() },
+                            onOverlayClick = { controlsVisible = false }
+                        )
+                    }
                 }
 
                 // 3. YouTube-Inspired Watch Page Content (Portrait)
@@ -1391,46 +1320,6 @@ fun UnifiedPlayerHost(
             }
         }
     }
-    } else if (uiState.sheetState == PlayerSheetState.COLLAPSED) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(bottom = bottomBarHeight),
-            contentAlignment = Alignment.BottomCenter
-        ) {
-            MiniPlayerBar(
-                uiState = uiState,
-                onExpand = { viewModel.expandPlayer() },
-                onTogglePlayPause = { togglePlayPause() },
-                onClose = { viewModel.closePlayer() },
-                videoSurface = {
-                    videoPlayerContent(true, Modifier.fillMaxSize())
-                }
-            )
-        }
-    }
-}
-
-@Composable
-fun PlayerScreen(
-    videoId: String,
-    viewModel: PlayerViewModel,
-    isPiPMode: Boolean = false,
-    onBack: () -> Unit = {},
-    onNavigateToVideo: (String) -> Unit = {},
-    onNavigateToChannel: (String, String) -> Unit = { _, _ -> }
-) {
-    LaunchedEffect(videoId) {
-        if (videoId.isNotEmpty()) {
-            viewModel.openVideo(videoId)
-        }
-    }
-    UnifiedPlayerHost(
-        viewModel = viewModel,
-        isPiPMode = isPiPMode,
-        bottomBarHeight = 0.dp,
-        onNavigateToChannel = onNavigateToChannel
-    )
 }
 
 @Composable
@@ -1677,16 +1566,6 @@ private fun buildEmbedHtml(videoId: String, autoplay: Boolean, speed: Float, sta
                         window.FocusTubeBridge.notifyStateChange(event.data);
                     }
                 }
-
-                window.loadNewVideo = function(newId, newAutoplay, newSpeed) {
-                    if (window.player && player.loadVideoById) {
-                        player.loadVideoById(newId);
-                        try { player.setPlaybackRate(newSpeed); } catch(e) {}
-                        if (newAutoplay) {
-                            try { player.playVideo(); } catch(e) {}
-                        }
-                    }
-                };
             </script>
         </body>
         </html>

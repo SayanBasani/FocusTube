@@ -13,30 +13,13 @@ import com.focustube.app.data.repository.LocalStorageRepository
 import com.focustube.app.data.repository.VideoRepository
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-enum class PlayerSheetState {
-    HIDDEN,
-    COLLAPSED,
-    EXPANDED
-}
-
-enum class PlayerCommand {
-    PLAY,
-    PAUSE,
-    TOGGLE_PLAY_PAUSE,
-    STOP
-}
-
 data class PlayerUiState(
-    val videoId: String = "",
-    val sheetState: PlayerSheetState = PlayerSheetState.HIDDEN,
+    val videoId: String,
     val video: VideoItem? = null,
     val isLoading: Boolean = true,
     val isPlayerReady: Boolean = false,
@@ -77,62 +60,14 @@ class PlayerViewModel(
     val watchLater: StateFlow<List<VideoItem>> = storageRepository.watchLater
     val subscriptions = storageRepository.subscriptions
 
-    private val _playerCommands = MutableSharedFlow<PlayerCommand>(extraBufferCapacity = 8)
-    val playerCommands: SharedFlow<PlayerCommand> = _playerCommands.asSharedFlow()
-
     private var sleepTimerJob: Job? = null
-
-    fun openVideo(videoId: String) {
-        if (_uiState.value.videoId == videoId && _uiState.value.video != null) {
-            _uiState.value = _uiState.value.copy(sheetState = PlayerSheetState.EXPANDED)
-            return
-        }
-        loadVideo(videoId)
-        _uiState.value = _uiState.value.copy(sheetState = PlayerSheetState.EXPANDED)
-    }
-
-    fun collapsePlayer() {
-        _uiState.value = _uiState.value.copy(sheetState = PlayerSheetState.COLLAPSED)
-    }
-
-    fun expandPlayer() {
-        _uiState.value = _uiState.value.copy(sheetState = PlayerSheetState.EXPANDED)
-    }
-
-    fun closePlayer() {
-        _playerCommands.tryEmit(PlayerCommand.STOP)
-        _uiState.value = _uiState.value.copy(
-            sheetState = PlayerSheetState.HIDDEN,
-            isPlaying = false,
-            videoId = ""
-        )
-    }
-
-    fun requestTogglePlayPause() {
-        _playerCommands.tryEmit(PlayerCommand.TOGGLE_PLAY_PAUSE)
-    }
-
-    fun requestPlay() {
-        _playerCommands.tryEmit(PlayerCommand.PLAY)
-    }
-
-    fun requestPause() {
-        _playerCommands.tryEmit(PlayerCommand.PAUSE)
-    }
 
     fun loadVideo(videoId: String) {
         if (_uiState.value.videoId == videoId && _uiState.value.video != null) return
 
         val initialSpeed = storageRepository.preferences.value.preferredSpeed
-        val targetSheetState = if (_uiState.value.sheetState == PlayerSheetState.HIDDEN) {
-            PlayerSheetState.EXPANDED
-        } else {
-            _uiState.value.sheetState
-        }
-
         _uiState.value = PlayerUiState(
             videoId = videoId,
-            sheetState = targetSheetState,
             isLoading = true,
             isPlayerReady = false,
             isPlaying = false,

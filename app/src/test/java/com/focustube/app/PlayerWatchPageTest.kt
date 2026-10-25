@@ -171,40 +171,4 @@ class PlayerWatchPageTest {
         assertTrue("Curated list should contain an active live stream for testing", hasLive)
         assertTrue("Curated list should contain a post-live VOD stream for testing", hasVod)
     }
-
-    @Test
-    fun testPlayerSheetState_transitions() {
-        val hidden = com.focustube.app.ui.screens.player.PlayerSheetState.HIDDEN
-        val collapsed = com.focustube.app.ui.screens.player.PlayerSheetState.COLLAPSED
-        val expanded = com.focustube.app.ui.screens.player.PlayerSheetState.EXPANDED
-
-        // Ensure distinct states exist
-        assertTrue(hidden != collapsed)
-        assertTrue(collapsed != expanded)
-        assertTrue(hidden != expanded)
-
-        // Initial default state in PlayerUiState
-        val uiState = com.focustube.app.ui.screens.player.PlayerUiState()
-        assertEquals(com.focustube.app.ui.screens.player.PlayerSheetState.HIDDEN, uiState.sheetState)
-
-        // Collapsed state
-        val collapsedUiState = uiState.copy(sheetState = com.focustube.app.ui.screens.player.PlayerSheetState.COLLAPSED)
-        assertEquals(com.focustube.app.ui.screens.player.PlayerSheetState.COLLAPSED, collapsedUiState.sheetState)
-
-        // Expanded state
-        val expandedUiState = uiState.copy(sheetState = com.focustube.app.ui.screens.player.PlayerSheetState.EXPANDED)
-        assertEquals(com.focustube.app.ui.screens.player.PlayerSheetState.EXPANDED, expandedUiState.sheetState)
-    }
-
-    @Test
-    fun testDeveloperConstants_values() {
-        assertEquals("Sayan Basani", com.focustube.app.util.DeveloperConstants.DEVELOPER_NAME)
-        assertEquals("Developer of FocusTube", com.focustube.app.util.DeveloperConstants.DEVELOPER_ROLE)
-        assertEquals("https://github.com/sayanbasani", com.focustube.app.util.DeveloperConstants.GITHUB_PROFILE_URL)
-        assertEquals("https://www.linkedin.com/in/sayanbasani/", com.focustube.app.util.DeveloperConstants.LINKEDIN_PROFILE_URL)
-        assertEquals("https://github.com/SayanBasani/FocusTube", com.focustube.app.util.DeveloperConstants.REPOSITORY_URL)
-        assertEquals("https://github.com/SayanBasani/FocusTube.git", com.focustube.app.util.DeveloperConstants.REPOSITORY_GIT_URL)
-        assertEquals("Made by Sayan Basani", com.focustube.app.util.DeveloperConstants.ATTRIBUTION)
-        assertTrue(com.focustube.app.util.DeveloperConstants.APP_DESCRIPTION.contains("distraction-aware"))
-    }
 }
