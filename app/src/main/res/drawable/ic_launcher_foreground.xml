@@ -1,0 +1,20 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Outer Focus / Zen Ring -->
+    <path
+        android:strokeColor="#3B82F6"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:pathData="M 32 20 A 36 36 0 1 1 20 54" />
+    <!-- Accent dot -->
+    <path
+        android:fillColor="#14B8A6"
+        android:pathData="M 32,20 m -4,0 a 4,4 0 1,0 8,0 a 4,4 0 1,0 -8,0" />
+    <!-- Intentional Play Triangle -->
+    <path
+        android:fillColor="#F8FAFC"
+        android:pathData="M 46,38 L 70,54 L 46,70 Z" />
+</vector>

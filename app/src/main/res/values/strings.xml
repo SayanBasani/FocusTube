@@ -1,0 +1,24 @@
+<resources>
+    <string name="app_name">FocusTube</string>
+    <string name="tagline">Distraction-Free Intentional Video Player</string>
+    
+    <!-- Navigation -->
+    <string name="nav_home">Discover</string>
+    <string name="nav_subscriptions">Subscriptions</string>
+    <string name="nav_library">Library</string>
+    <string name="nav_settings">Focus Settings</string>
+    
+    <!-- Focus & Distraction Controls -->
+    <string name="filter_shorts_title">Block YouTube Shorts</string>
+    <string name="filter_shorts_desc">Eliminate short-form algorithmic vertical videos</string>
+    <string name="autoplay_title">Autoplay Next Video</string>
+    <string name="autoplay_desc">Disabled by default to prevent endless scrolling</string>
+    <string name="hide_comments_title">Hide Video Comments</string>
+    <string name="hide_comments_desc">Remove comment section arguments and distractions</string>
+    <string name="hide_metrics_title">Hide Views &amp; Upload Dates</string>
+    <string name="hide_metrics_desc">Focus on content quality rather than popularity metrics</string>
+    <string name="grayscale_thumbnails_title">Minimalist / Grayscale Thumbnails</string>
+    <string name="grayscale_thumbnails_desc">De-saturate thumbnails to prevent clickbait dopamine triggers</string>
+    <string name="focus_timer_title">Study / Focus Session Timer</string>
+    <string name="focus_timer_desc">Notify and pause when intentional study time ends</string>
+</resources>
