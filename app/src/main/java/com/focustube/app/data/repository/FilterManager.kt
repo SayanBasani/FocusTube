@@ -14,19 +14,36 @@ object FilterManager {
 
     /**
      * Determines whether a video is a YouTube Short based on:
-     * 1. Direct metadata flag (isShort)
-     * 2. URL pattern (/shorts/{id})
-     * 3. Title or description hashtag (#shorts, #reel)
-     * 4. Duration <= 180s (YouTube 2024+ 3-minute Shorts support) with shorts indicators
+     * 1. Duration must be <= 180s (YouTube 2024+ 3-minute Shorts policy limit). Videos > 180s are never Shorts.
+     * 2. URL pattern (/shorts/{id}).
+     * 3. Title hashtag (#shorts, #reel, #short) or shorts indicator for eligible duration (1..180s).
+     * 4. Direct provider metadata flag (isShort) when duration is within eligible limit.
      */
     fun isShortVideo(item: VideoItem): Boolean {
-        if (item.isShort) return true
-        if (SHORTS_URL_REGEX.containsMatchIn(item.videoUrl)) return true
-        if (SHORTS_TAG_REGEX.containsMatchIn(item.title)) return true
-        if (SHORTS_TAG_REGEX.containsMatchIn(item.description)) return true
-        if (item.durationSeconds in 1..180 && item.title.contains(Regex("(?i)\\bshorts?\\b|#shorts?\\b|#reel\\b"))) {
+        // Videos longer than 180 seconds (3 minutes) are NEVER YouTube Shorts
+        if (item.durationSeconds > 180) {
+            return false
+        }
+
+        // Explicit Shorts URL pattern
+        if (SHORTS_URL_REGEX.containsMatchIn(item.videoUrl) || item.videoUrl.contains("/shorts/")) {
             return true
         }
+
+        // Explicit isShort provider flag with eligible duration
+        if (item.isShort && (item.durationSeconds in 1..180 || item.durationSeconds <= 0)) {
+            return true
+        }
+
+        // Eligible duration (1..180s) with title indicator or hashtag
+        if (item.durationSeconds in 1..180) {
+            if (SHORTS_TAG_REGEX.containsMatchIn(item.title) ||
+                item.title.contains(Regex("(?i)\\bshorts?\\b|#shorts?\\b|#reel\\b"))
+            ) {
+                return true
+            }
+        }
+
         return false
     }
 

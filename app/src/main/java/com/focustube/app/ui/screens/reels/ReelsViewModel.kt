@@ -40,6 +40,8 @@ class ReelsViewModel(
     val subscriptions = storageRepository.subscriptions
     val watchLater = storageRepository.watchLater
 
+    private var fetchReelsJob: kotlinx.coroutines.Job? = null
+    private var loadMoreJob: kotlinx.coroutines.Job? = null
     private var currentPage = 1
     private val seenReelIds = mutableSetOf<String>()
 
@@ -48,7 +50,9 @@ class ReelsViewModel(
     }
 
     fun loadReels() {
-        viewModelScope.launch {
+        fetchReelsJob?.cancel()
+        loadMoreJob?.cancel()
+        fetchReelsJob = viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
             currentPage = 1
             seenReelIds.clear()
@@ -74,31 +78,43 @@ class ReelsViewModel(
     fun loadMoreReels() {
         val state = _uiState.value
         if (state.isLoadingMore || state.isLoading || !state.canLoadMore) return
-        viewModelScope.launch {
+        loadMoreJob?.cancel()
+        loadMoreJob = viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoadingMore = true)
-            val nextPage = currentPage + 1
-            val result = videoRepository.getReelsVideosPaged(page = nextPage)
-            result.onSuccess { paged ->
-                val newItems = paged.items.filter { seenReelIds.add(it.id) }
-                if (newItems.isNotEmpty()) {
-                    currentPage = nextPage
-                    _uiState.value = _uiState.value.copy(
-                        isLoadingMore = false,
-                        reels = _uiState.value.reels + newItems,
-                        canLoadMore = paged.hasMore
-                    )
-                } else if (paged.hasMore && nextPage < currentPage + 3) {
-                    currentPage = nextPage
-                    _uiState.value = _uiState.value.copy(isLoadingMore = false)
-                    loadMoreReels()
+            var attemptPage = currentPage + 1
+            var appended = false
+            var attempts = 0
+
+            while (attempts < 3 && !appended) {
+                attempts++
+                val result = videoRepository.getReelsVideosPaged(page = attemptPage)
+                if (result.isSuccess) {
+                    val paged = result.getOrThrow()
+                    val newItems = paged.items.filter { seenReelIds.add(it.id) }
+                    if (newItems.isNotEmpty()) {
+                        currentPage = attemptPage
+                        appended = true
+                        _uiState.value = _uiState.value.copy(
+                            isLoadingMore = false,
+                            reels = _uiState.value.reels + newItems,
+                            canLoadMore = paged.hasMore
+                        )
+                        break
+                    } else if (paged.hasMore) {
+                        attemptPage++
+                    } else {
+                        break
+                    }
                 } else {
-                    _uiState.value = _uiState.value.copy(
-                        isLoadingMore = false,
-                        canLoadMore = false
-                    )
+                    break
                 }
-            }.onFailure {
-                _uiState.value = _uiState.value.copy(isLoadingMore = false)
+            }
+
+            if (!appended) {
+                _uiState.value = _uiState.value.copy(
+                    isLoadingMore = false,
+                    canLoadMore = false
+                )
             }
         }
     }

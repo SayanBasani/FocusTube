@@ -36,6 +36,9 @@ class LocalStorageRepository(context: Context) {
     private val _historyPaused = MutableStateFlow(prefs.getBoolean("history_paused", false))
     val historyPaused: StateFlow<Boolean> = _historyPaused.asStateFlow()
 
+    private val _recentSearches = MutableStateFlow(loadRecentSearches())
+    val recentSearches: StateFlow<List<String>> = _recentSearches.asStateFlow()
+
     // --- Focus Preferences ---
 
     private fun loadPreferences(): FocusPreferences {
@@ -212,6 +215,43 @@ class LocalStorageRepository(context: Context) {
         }
         _subscriptions.value = current
         saveList("local_subscriptions", current)
+    }
+
+    // --- Recent Searches ---
+
+    private fun loadRecentSearches(): List<String> {
+        val json = prefs.getString("recent_searches", null) ?: return emptyList()
+        return try {
+            val type = object : TypeToken<List<String>>() {}.type
+            gson.fromJson(json, type) ?: emptyList()
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    fun addSearchQuery(query: String) {
+        val clean = query.trim()
+        if (clean.isBlank()) return
+        val current = _recentSearches.value.toMutableList()
+        current.removeAll { it.equals(clean, ignoreCase = true) }
+        current.add(0, clean)
+        if (current.size > 20) {
+            current.subList(20, current.size).clear()
+        }
+        _recentSearches.value = current
+        saveList("recent_searches", current)
+    }
+
+    fun removeSearchQuery(query: String) {
+        val current = _recentSearches.value.toMutableList()
+        current.removeAll { it.equals(query, ignoreCase = true) }
+        _recentSearches.value = current
+        saveList("recent_searches", current)
+    }
+
+    fun clearRecentSearches() {
+        _recentSearches.value = emptyList()
+        prefs.edit().remove("recent_searches").apply()
     }
 
     private fun <T> saveList(key: String, list: List<T>) {

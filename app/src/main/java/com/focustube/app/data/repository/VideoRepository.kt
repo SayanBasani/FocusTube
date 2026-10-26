@@ -16,9 +16,10 @@ class VideoRepository(
     suspend fun getHomeVideosPaged(
         category: String = "All",
         page: Int = 1,
+        cursor: String? = null,
         existingVideos: List<VideoItem> = emptyList()
     ): Result<PagedResult<VideoItem>> {
-        val result = apiClient.getDiscoverFeedPaged(category, pageIndex = page)
+        val result = apiClient.getDiscoverFeedPaged(category, pageIndex = page, cursor = cursor)
         return result.map { paged ->
             val filtered = FilterManager.filterDiscover(paged.items, storageRepo.preferences.value)
             val diversified = FilterManager.applyChannelDiversity(filtered, existingVideos)
@@ -27,7 +28,11 @@ class VideoRepository(
     }
 
     suspend fun getHomeVideos(category: String = "All", page: Int = 1): Result<List<VideoItem>> {
-        return getHomeVideosPaged(category, page = page).map { it.items }
+        return getHomeVideosPaged(category, page = page, cursor = null).map { it.items }
+    }
+
+    suspend fun getSearchSuggestions(query: String): Result<List<String>> {
+        return apiClient.getSearchSuggestions(query)
     }
 
     suspend fun searchVideosPaged(

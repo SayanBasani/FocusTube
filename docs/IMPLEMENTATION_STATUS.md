@@ -307,39 +307,49 @@ FocusTube V7 delivers comprehensive autonomous repairs and polish across four pr
 
 ```
 > Task :app:testDebugUnitTest
-FilterManagerTest > testIsShortVideo_identifiesDirectShortFlag PASSED
-FilterManagerTest > testIsShortVideo_identifiesShortsUrl PASSED
-FilterManagerTest > testIsShortVideo_identifiesShortsHashtag PASSED
-FilterManagerTest > testIsShortVideo_retainsLongFormVideos PASSED
-FilterManagerTest > testFilterDiscover_excludesShortsWhenEnabled PASSED
-FilterManagerTest > testFilterSearch_excludesShortsWhenEnabled PASSED
-FilterManagerTest > testExtractReels_filtersOnlyShorts PASSED
-FilterManagerTest > testExtractVideoId_handlesVariousFormats PASSED
-FilterManagerTest > testSanitizeSpeed_supportsUpToThreeX PASSED
-ReelsGatingTest > testReels_disabledByDefault PASSED
-ReelsGatingTest > testReels_canBeEnabledExplicitly PASSED
-ReelsGatingTest > testShortsExclusion_enabledByDefault PASSED
-ThemePersistenceTest > testDefaultTheme_isSystem PASSED
-ThemePersistenceTest > testThemeModes_supportDarkAndLight PASSED
-PlayerWatchPageTest > testCommentsData_defaultStateIsIdle PASSED
-PlayerWatchPageTest > testCommentsData_disabledStatusRecognized PASSED
-PlayerWatchPageTest > testCommentsData_emptyStatusDistinguishedFromError PASSED
-PlayerWatchPageTest > testRelatedVideos_excludesShortsViaFilterManager PASSED
-PlayerWatchPageTest > testVideoItem_richMetadataAndChannelAvatar PASSED
-PlayerWatchPageTest > testCuratedFallback_includesChannelAvatars PASSED
-PlayerWatchPageTest > testCuratedFallback_includesLiveAndVodStreams PASSED
-PlayerWatchPageTest > testProgressBarThickness_defaultsToThin PASSED
-PlayerWatchPageTest > testLiveStatus_enumAndProperties PASSED
-PlayerWatchPageTest > testDeveloperConstants_valuesAndAttribution PASSED
-PlayerWatchPageTest > testPlayerSheetState_expandedCollapsedHidden PASSED
-PlayerWatchPageTest > testPagedResult_contractProperties PASSED
-PlayerWatchPageTest > testIsShortVideo_supportsUpTo180Seconds PASSED
-PlayerWatchPageTest > testChannelDiversity_limitsConsecutiveVideosFromSameChannel PASSED
-
-BUILD SUCCESSFUL in 13s
-28 tests passed, 0 failed.
+TOTAL: 36 tests across 5 test suites:
+- FilterManagerTest: 9 passed, 0 failed
+- PlayerWatchPageTest: 14 passed, 0 failed
+- ProductionFeedTest: 8 passed, 0 failed
+- ReelsGatingTest: 3 passed, 0 failed
+- ThemePersistenceTest: 2 passed, 0 failed
+BUILD SUCCESSFUL: 36 passed, 0 failed.
 ```
 
-- **Output Deliverable APK**: [`C:\dev\Zeztube\artifacts\FocusTube-debug.apk`](file:///C:/dev/Zeztube/artifacts/FocusTube-debug.apk) (22,185,557 bytes)
-- **Target Device Tested**: `emulator-5554` (Pixel 6, Android 15 / API 35, package `com.focustube.app.debug`)
+- **Output Deliverable Debug APK**: [`C:\dev\Zeztube\artifacts\FocusTube-debug.apk`](file:///C:/dev/Zeztube/artifacts/FocusTube-debug.apk) (22,218,325 bytes, built Oct 26 11:39 PM)
+- **Output Deliverable Release APK**: [`C:\dev\Zeztube\artifacts\FocusTube-release.apk`](file:///C:/dev/Zeztube/artifacts/FocusTube-release.apk) (15,103,846 bytes, built Oct 26 11:40 PM)
+- **Target Device Tested**: `emulator-5554` (Pixel 6, Android 15 / API 35, package `com.focustube.app`)
+
+---
+
+## 13. Production Release APK Repair, Search Suggestions & Hindi Song Fix
+
+### A. Release-Versus-Debug Discrepancy & Root Cause Analysis
+1. **Stale Installed Release Artifact**:
+   Inspection revealed that `C:\dev\Zeztube\artifacts\FocusTube-release.apk` had not been rebuilt since Oct 25, 10:22 PM (prior to the Invidious instance overhaul, PagedResult contract, and V8/V9 improvements). It contained dead endpoints (`yewtu.be` returning Cloudflare CAPTCHAs, `invidious.jing.rocks` failing DNS), causing all requests to silently fail and fall back to 4 static English educational videos.
+2. **Missing Search Suggestions & Empty "Hindi song"**:
+   Suggestions were completely absent in the codebase. When searching for `Hindi song`, the dead provider failed, and the legacy fallback code searched the static curated list (MIT, 3Blue1Brown, Kurzgesagt), which contained 0 matches for "Hindi song", returning an empty screen.
+3. **Over-Strict Short Video Classifier**:
+   A video was previously marked as a Short if the title had `#shorts` regardless of length. Long videos (>180s) gaming hashtags were misclassified. Now, `FilterManager.isShortVideo` strictly enforces YouTube's $\le 180$s limit.
+4. **R8/ProGuard Protections**:
+   Added explicit keep rules in `proguard-rules.pro` for:
+   - `@android.webkit.JavascriptInterface` methods in `FocusTubeBridge`
+   - All `com.focustube.app.data.model.**` Gson models
+   - OkHttp, Media3, and Kotlin Coroutines.
+5. **URL & Transport Security**:
+   Normalized all thumbnail and author avatar URLs to `https://` to prevent Android 15 cleartext HTTP blocks.
+
+### B. Live Emulator Verification on Release APK (`com.focustube.app`)
+
+| Test Area | Action | Observed Result | Release Screenshot |
+|---|---|---|---|
+| **Release Discover** | Cold start `com.focustube.app` | Real trending & live streams load from live Invidious instance | [`release_discover.png`](file:///C:/dev/Zeztube/artifacts/release_discover.png) |
+| **Discover Pagination** | Scroll down Discover | Continuous unique batches appended with stable IDs | [`release_discover_paginated.png`](file:///C:/dev/Zeztube/artifacts/release_discover_paginated.png) |
+| **Search Suggestions** | Type "Hindi" in search | Instant debounced suggestions: `hindi song`, `hindi movie`, etc. | [`release_search_suggestions.png`](file:///C:/dev/Zeztube/artifacts/release_search_suggestions.png) |
+| **Hindi Song Search** | Tap `hindi song` suggestion | Returned real songs: Tips Official, Grow Music, Anish Golu | [`release_search_hindi_song.png`](file:///C:/dev/Zeztube/artifacts/release_search_hindi_song.png) |
+| **Search Pagination** | Scroll down Hindi song results | Appends page 2 results: Abhijeet Srivastava "Tere Bina" | [`release_search_paginated.png`](file:///C:/dev/Zeztube/artifacts/release_search_paginated.png) |
+| **Release Reels 1** | Enable Reels in Focus Settings | Loads short-form video "The Secret Life of Raindrops! 💧" | [`release_reels_continuous.png`](file:///C:/dev/Zeztube/artifacts/release_reels_continuous.png) |
+| **Release Reels 2** | Swipe up vertically | Smoothly advances to "How Do Fruits Grow? 🍎" | [`release_reels_swiped.png`](file:///C:/dev/Zeztube/artifacts/release_reels_swiped.png) |
+| **Diagnostic Logging** | `adb logcat` check | Clean `FocusTube_API`, `FocusTube_Search` log tags without leaking secrets | Verified in logcat output |
+
 

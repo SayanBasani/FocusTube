@@ -7,6 +7,7 @@ import com.focustube.app.data.model.PagedResult
 import com.focustube.app.data.model.VideoCommentsData
 import com.focustube.app.data.model.VideoItem
 import com.focustube.app.data.repository.FilterManager
+import com.focustube.app.util.SafeLogger
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -24,17 +25,15 @@ class YouTubeApiClient {
         .readTimeout(8, TimeUnit.SECONDS)
         .build()
 
-    // Multiple public Invidious and Piped instances for high resilience
+    // Multiple verified public Invidious and Piped instances for high resilience
     private val invidiousInstances = listOf(
         "https://yt.chocolatemoo53.com",
-        "https://yewtu.be",
-        "https://invidious.jing.rocks",
-        "https://inv.nadeko.net"
+        "https://invidious.projectsegfau.lt",
+        "https://invidious.nerdvpn.de"
     )
 
     private val pipedInstances = listOf(
-        "https://pipedapi.ducks.party",
-        "https://pipedapi.leptons.xyz"
+        "https://pipedapi.ducks.party"
     )
 
     private var activeInvidiousIndex = 0
@@ -45,10 +44,12 @@ class YouTubeApiClient {
 
     private fun rotateInvidious() {
         activeInvidiousIndex = (activeInvidiousIndex + 1) % invidiousInstances.size
+        SafeLogger.d("API", "Rotated Invidious to: ${getInvidiousBase()}")
     }
 
     private fun rotatePiped() {
         activePipedIndex = (activePipedIndex + 1) % pipedInstances.size
+        SafeLogger.d("API", "Rotated Piped to: ${getPipedBase()}")
     }
 
     companion object {
@@ -75,6 +76,103 @@ class YouTubeApiClient {
     }
 
     /**
+     * Fetches real debounced search suggestions from active provider,
+     * falling back to Google Suggest API. Supports Unicode & multi-language queries.
+     */
+    suspend fun getSearchSuggestions(query: String): Result<List<String>> = withContext(Dispatchers.IO) {
+        val clean = query.trim()
+        if (clean.isBlank()) return@withContext Result.success(emptyList())
+        val encoded = URLEncoder.encode(clean, "UTF-8")
+
+        // 1. Invidious suggestions
+        for (i in invidiousInstances.indices) {
+            val url = "${getInvidiousBase()}/api/v1/search/suggestions?q=$encoded"
+            try {
+                val req = Request.Builder()
+                    .url(url)
+                    .header("User-Agent", "FocusTube/1.0 (Android)")
+                    .build()
+                client.newCall(req).execute().use { res ->
+                    if (res.isSuccessful) {
+                        val body = res.body?.string() ?: ""
+                        if (!body.startsWith("<") && body.trimStart().startsWith("{")) {
+                            val parsed = JsonParser.parseString(body)
+                            if (parsed.isJsonObject) {
+                                val arr = parsed.asJsonObject.getAsJsonArray("suggestions")
+                                if (arr != null && arr.size() > 0) {
+                                    val list = arr.mapNotNull { it.asString }
+                                    SafeLogger.d("API", "Invidious suggestions for '$clean': ${list.size} items")
+                                    return@withContext Result.success(list)
+                                }
+                            }
+                        }
+                    } else {
+                        rotateInvidious()
+                    }
+                }
+            } catch (e: Exception) {
+                SafeLogger.w("API", "Invidious suggestion failure: ${e.message}")
+                rotateInvidious()
+            }
+        }
+
+        // 2. Google Suggest fallback (reliable, high-availability, multi-lingual Unicode support)
+        try {
+            val url = "https://suggestqueries.google.com/complete/search?client=firefox&ds=yt&q=$encoded"
+            val req = Request.Builder()
+                .url(url)
+                .header("User-Agent", "Mozilla/5.0 (Android)")
+                .build()
+            client.newCall(req).execute().use { res ->
+                if (res.isSuccessful) {
+                    val body = res.body?.string() ?: ""
+                    val parsed = JsonParser.parseString(body)
+                    if (parsed.isJsonArray && parsed.asJsonArray.size() > 1) {
+                        val sugArr = parsed.asJsonArray.get(1).asJsonArray
+                        val list = sugArr.mapNotNull { it.asString }
+                        SafeLogger.d("API", "Google suggest for '$clean': ${list.size} items")
+                        return@withContext Result.success(list)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            SafeLogger.w("API", "Google suggestion failure: ${e.message}")
+        }
+
+        // 3. Piped suggestions fallback
+        for (i in pipedInstances.indices) {
+            val url = "${getPipedBase()}/suggestions?query=$encoded"
+            try {
+                val req = Request.Builder()
+                    .url(url)
+                    .header("User-Agent", "FocusTube/1.0 (Android)")
+                    .build()
+                client.newCall(req).execute().use { res ->
+                    if (res.isSuccessful) {
+                        val body = res.body?.string() ?: ""
+                        if (!body.startsWith("<") && body.trimStart().startsWith("[")) {
+                            val parsed = JsonParser.parseString(body)
+                            if (parsed.isJsonArray) {
+                                val list = parsed.asJsonArray.mapNotNull { it.asString }
+                                if (list.isNotEmpty()) {
+                                    SafeLogger.d("API", "Piped suggestions for '$clean': ${list.size} items")
+                                    return@withContext Result.success(list)
+                                }
+                            }
+                        }
+                    } else {
+                        rotatePiped()
+                    }
+                }
+            } catch (e: Exception) {
+                rotatePiped()
+            }
+        }
+
+        Result.success(emptyList())
+    }
+
+    /**
      * Searches videos using a formal PagedResult contract.
      * Supports Invidious page-based pagination and Piped nextpage cursor pagination.
      */
@@ -88,13 +186,59 @@ class YouTubeApiClient {
             return@withContext Result.success(PagedResult.empty("empty_query", isExhausted = true))
         }
 
-        // 1. Try Piped search if token available or first attempt
+        var lastError: Exception? = null
+        val encodedQuery = URLEncoder.encode(cleanQuery, "UTF-8")
+
+        // 1. Try Invidious search (supports page=1, 2, 3...)
+        for (i in invidiousInstances.indices) {
+            val url = "${getInvidiousBase()}/api/v1/search?q=$encodedQuery&type=video&page=$page"
+            SafeLogger.d("API", "Invidious search: $url (page $page)")
+            try {
+                val req = Request.Builder()
+                    .url(url)
+                    .header("User-Agent", "FocusTube/1.0 (Android)")
+                    .build()
+                client.newCall(req).execute().use { res ->
+                    if (res.isSuccessful) {
+                        val body = res.body?.string() ?: ""
+                        if (!body.startsWith("<") && (body.trimStart().startsWith("[") || body.trimStart().startsWith("{"))) {
+                            val items = parseVideoList(body)
+                            val hasMore = items.size >= 8
+                            val nextCursor = if (hasMore) (page + 1).toString() else null
+                            SafeLogger.d("API", "Invidious search returned ${items.size} videos for '$cleanQuery'")
+                            return@withContext Result.success(
+                                PagedResult(
+                                    items = items,
+                                    nextCursor = nextCursor,
+                                    hasMore = hasMore,
+                                    sourceId = "invidious:${getInvidiousBase()}",
+                                    pageNumber = page
+                                )
+                            )
+                        } else {
+                            SafeLogger.w("API", "Invidious non-JSON response from ${getInvidiousBase()}")
+                            rotateInvidious()
+                        }
+                    } else {
+                        SafeLogger.w("API", "Invidious HTTP ${res.code} from ${getInvidiousBase()}")
+                        rotateInvidious()
+                    }
+                }
+            } catch (e: Exception) {
+                lastError = e
+                SafeLogger.w("API", "Invidious search error: ${e.message}")
+                rotateInvidious()
+            }
+        }
+
+        // 2. Try Piped search if Invidious was unavailable
         for (i in pipedInstances.indices) {
             val url = if (!nextPageToken.isNullOrEmpty()) {
-                "${getPipedBase()}/nextpage/search?nextpage=${URLEncoder.encode(nextPageToken, "UTF-8")}&q=${URLEncoder.encode(cleanQuery, "UTF-8")}&filter=videos"
+                "${getPipedBase()}/nextpage/search?nextpage=${URLEncoder.encode(nextPageToken, "UTF-8")}&q=$encodedQuery&filter=videos"
             } else {
-                "${getPipedBase()}/search?q=${URLEncoder.encode(cleanQuery, "UTF-8")}&filter=videos"
+                "${getPipedBase()}/search?q=$encodedQuery&filter=videos"
             }
+            SafeLogger.d("API", "Piped search: $url")
             try {
                 val req = Request.Builder()
                     .url(url)
@@ -107,77 +251,51 @@ class YouTubeApiClient {
                             val parsed = JsonParser.parseString(body)
                             val items = parseVideoList(body)
                             val nextToken = if (parsed.isJsonObject) parsed.asJsonObject.get("nextpage")?.asString else null
-                            if (items.isNotEmpty()) {
-                                return@withContext Result.success(
-                                    PagedResult(
-                                        items = items,
-                                        nextCursor = nextToken,
-                                        hasMore = nextToken != null || items.size >= 10,
-                                        sourceId = "piped:${getPipedBase()}",
-                                        pageNumber = page
-                                    )
+                            SafeLogger.d("API", "Piped search returned ${items.size} videos for '$cleanQuery'")
+                            return@withContext Result.success(
+                                PagedResult(
+                                    items = items,
+                                    nextCursor = nextToken,
+                                    hasMore = nextToken != null || items.size >= 10,
+                                    sourceId = "piped:${getPipedBase()}",
+                                    pageNumber = page
                                 )
-                            }
+                            )
                         }
+                    } else {
+                        SafeLogger.w("API", "Piped HTTP ${res.code} from ${getPipedBase()}")
+                        rotatePiped()
                     }
                 }
             } catch (e: Exception) {
+                lastError = e
+                SafeLogger.w("API", "Piped search error: ${e.message}")
                 rotatePiped()
             }
         }
 
-        // 2. Try Invidious search with real page advance
-        for (i in invidiousInstances.indices) {
-            val url = "${getInvidiousBase()}/api/v1/search?q=${URLEncoder.encode(cleanQuery, "UTF-8")}&type=video&page=$page"
-            try {
-                val req = Request.Builder()
-                    .url(url)
-                    .header("User-Agent", "FocusTube/1.0 (Android)")
-                    .build()
-                client.newCall(req).execute().use { res ->
-                    if (res.isSuccessful) {
-                        val body = res.body?.string() ?: ""
-                        if (!body.startsWith("<")) {
-                            val items = parseVideoList(body)
-                            if (items.isNotEmpty()) {
-                                val hasMore = items.size >= 8
-                                val nextCursor = if (hasMore) (page + 1).toString() else null
-                                return@withContext Result.success(
-                                    PagedResult(
-                                        items = items,
-                                        nextCursor = nextCursor,
-                                        hasMore = hasMore,
-                                        sourceId = "invidious:${getInvidiousBase()}",
-                                        pageNumber = page
-                                    )
-                                )
-                            }
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                rotateInvidious()
-            }
-        }
-
-        // 3. Curated Fallback (Offline only - finite, not endless)
+        // 3. Fallback to curated catalog ONLY if items genuinely match the query
         val matches = getCuratedEducationalFallback().filter {
             it.title.contains(cleanQuery, ignoreCase = true) ||
             it.channelName.contains(cleanQuery, ignoreCase = true) ||
             it.description.contains(cleanQuery, ignoreCase = true)
         }
-        val fallbackItems = matches.ifEmpty { getCuratedEducationalFallback().take(4) }
-        Result.success(
-            PagedResult(
-                items = fallbackItems,
-                nextCursor = null,
-                hasMore = false,
-                sourceId = "offline_curated",
-                isExhausted = true,
-                isRetryable = false,
-                pageNumber = page
+        if (matches.isNotEmpty()) {
+            return@withContext Result.success(
+                PagedResult(
+                    items = matches,
+                    nextCursor = null,
+                    hasMore = false,
+                    sourceId = "offline_curated",
+                    isExhausted = true,
+                    isRetryable = false,
+                    pageNumber = page
+                )
             )
-        )
+        }
+
+        // Distinctly return failure so UI can render ErrorView with Retry action
+        Result.failure(lastError ?: Exception("Unable to connect to video provider. Please check network connection."))
     }
 
     /**
@@ -500,6 +618,8 @@ class YouTubeApiClient {
                 }
                 if (authorAvatar.startsWith("//")) {
                     authorAvatar = "https:$authorAvatar"
+                } else if (authorAvatar.startsWith("http://")) {
+                    authorAvatar = "https://${authorAvatar.removePrefix("http://")}"
                 }
 
                 // Detect live status
@@ -517,13 +637,22 @@ class YouTubeApiClient {
                     else -> LiveStatus.NONE
                 }
 
-                // Detect shorts
-                val isShort = obj.get("isShort")?.asBoolean == true ||
+                // Detect shorts: Strictly enforce <= 180s duration
+                val isShort = if (lengthSec > 180) {
+                    false
+                } else {
+                    obj.get("isShort")?.asBoolean == true ||
                     obj.get("type")?.asString == "short" ||
                     (lengthSec in 1..180 && (title.contains(Regex("(?i)\\bshorts?\\b|#shorts?\\b|#reel\\b")) || desc.contains(Regex("(?i)\\bshorts?\\b|#shorts?\\b|#reel\\b"))))
+                }
 
-                val thumb = obj.get("thumbnail")?.asString
+                var thumb = obj.get("thumbnail")?.asString
                     ?: "https://img.youtube.com/vi/$id/hqdefault.jpg"
+                if (thumb.startsWith("//")) {
+                    thumb = "https:$thumb"
+                } else if (thumb.startsWith("http://")) {
+                    thumb = "https://${thumb.removePrefix("http://")}"
+                }
 
                 val durText = if (liveStatus == LiveStatus.LIVE) "LIVE" else formatDuration(lengthSec)
 
