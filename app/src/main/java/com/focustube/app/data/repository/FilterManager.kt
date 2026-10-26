@@ -17,16 +17,67 @@ object FilterManager {
      * 1. Direct metadata flag (isShort)
      * 2. URL pattern (/shorts/{id})
      * 3. Title or description hashtag (#shorts, #reel)
-     * 4. Duration <= 60s with shorts indicators
+     * 4. Duration <= 180s (YouTube 2024+ 3-minute Shorts support) with shorts indicators
      */
     fun isShortVideo(item: VideoItem): Boolean {
         if (item.isShort) return true
         if (SHORTS_URL_REGEX.containsMatchIn(item.videoUrl)) return true
         if (SHORTS_TAG_REGEX.containsMatchIn(item.title)) return true
-        if (item.durationSeconds in 1..60 && item.title.contains(Regex("(?i)shorts?|#shorts?"))) {
+        if (SHORTS_TAG_REGEX.containsMatchIn(item.description)) return true
+        if (item.durationSeconds in 1..180 && item.title.contains(Regex("(?i)\\bshorts?\\b|#shorts?\\b|#reel\\b"))) {
             return true
         }
         return false
+    }
+
+    /**
+     * Applies a soft channel diversity filter.
+     * In a rolling window of recent videos (default 20), aims to show at most
+     * maxPerChannel videos (default 2) from any single channel.
+     * If too few unique channels exist, gradually relaxes the restriction
+     * to prevent feed starvation.
+     */
+    fun applyChannelDiversity(
+        candidates: List<VideoItem>,
+        recentFeed: List<VideoItem>,
+        windowSize: Int = 20,
+        maxPerChannel: Int = 2
+    ): List<VideoItem> {
+        val recentWindow = recentFeed.takeLast(windowSize)
+        val channelCounts = mutableMapOf<String, Int>()
+
+        for (v in recentWindow) {
+            val key = v.channelId?.takeIf { it.isNotBlank() } ?: v.channelName.trim().lowercase()
+            if (key.isNotBlank()) {
+                channelCounts[key] = (channelCounts[key] ?: 0) + 1
+            }
+        }
+
+        val accepted = mutableListOf<VideoItem>()
+        val deferred = mutableListOf<VideoItem>()
+
+        for (candidate in candidates) {
+            val key = candidate.channelId?.takeIf { it.isNotBlank() } ?: candidate.channelName.trim().lowercase()
+            val currentCount = if (key.isNotBlank()) channelCounts[key] ?: 0 else 0
+
+            if (key.isBlank() || currentCount < maxPerChannel) {
+                accepted.add(candidate)
+                if (key.isNotBlank()) {
+                    channelCounts[key] = currentCount + 1
+                }
+            } else {
+                deferred.add(candidate)
+            }
+        }
+
+        // Soft fallback: if accepted items are too few (< 4) and we have deferred candidates,
+        // relax the quota so the user is never starved of content.
+        if (accepted.size < 4 && deferred.isNotEmpty()) {
+            val needed = 4 - accepted.size
+            accepted.addAll(deferred.take(needed))
+        }
+
+        return accepted
     }
 
     /**

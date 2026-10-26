@@ -250,7 +250,60 @@ FocusTube V7 delivers comprehensive autonomous repairs and polish across four pr
 
 ---
 
-## 9. Final Build & Test Verification
+## 9. FocusTube V8: In-App Mini-Player & Developer Profile
+
+### A. YouTube-Style In-App Mini-Player
+- **Unified Single-Player Lifecycle**: Maintained one shared player session across Full Watch Page and In-App Mini-Player using Jetpack Compose `movableContentOf`.
+- **Docked Mini-Player Bar**: 64 dp mini-player anchored above the bottom navigation bar. Features 16:9 video preview, single-line truncated title, creator name, responsive Play/Pause toggle, close button, and 2 dp progress indicator.
+- **Full Navigation Coexistence**: Browsing Discover, Search, Following, Library, and Settings maintains uninterrupted playback. Feeds dynamically adjust bottom padding (+68 dp) when collapsed so no items are obstructed.
+- **Re-expansion**: Single tap on mini-player re-expands smoothly to Full Watch Page without reloading the stream or resetting timestamps.
+- **Dismissal**: Close button (`x`) halts playback and cleans up player view.
+- **System PiP Preservation**: Android 15 floating window continues working seamlessly when exiting to home screen.
+
+### B. Developer Profile, Attribution & Social Links
+- **Metadata Source**: Created [`DeveloperConstants.kt`](file:///C:/dev/Zeztube/app/src/main/java/com/focustube/app/data/model/DeveloperConstants.kt) centralizing developer info:
+  - Developer: **Sayan Basani**, Role: Developer of FocusTube.
+  - Links: GitHub (`https://github.com/sayanbasani`), LinkedIn (`https://www.linkedin.com/in/sayanbasani/`), Repo (`https://github.com/SayanBasani/FocusTube.git` / browser `https://github.com/SayanBasani/FocusTube`).
+  - App Description: *"A distraction-aware video experience designed to help you watch content with greater control."*
+  - Dynamic Version: Retrieved dynamically via `BuildConfig.VERSION_NAME` (`1.0.0`).
+- **Dedicated About & Developer Screen**: Created [`AboutScreen.kt`](file:///C:/dev/Zeztube/app/src/main/java/com/focustube/app/ui/screens/AboutScreen.kt) accessible via **Settings → About & Developer**, offering one-tap external browser navigation, URL clipboard copying, and system share sheets.
+
+---
+
+## 10. FocusTube V9: Real Pagination, Diversity & Continuous Feeds
+
+### A. Formal Pagination Contract (`PagedResult<T>`)
+- Replaced unpaginated trending queries with [`PagedResult<T>`](file:///C:/dev/Zeztube/app/src/main/java/com/focustube/app/data/model/PagedResult.kt) (`items`, `nextCursor`, `hasMore`, `sourceId`, `isExhausted`, `isRetryable`, `pageNumber`).
+- Discover feed powered by topic rotation across curated educational and intentional themes (`science`, `technology`, `education`, `programming`, `space`, `philosophy`).
+
+### B. Channel Diversity Engine
+- Built `FilterManager.applyChannelDiversity`: Enforces $\le 2$ videos per creator in a rolling 20-video window.
+- Soft relaxation prevents starvation when candidate items belong to few creators.
+
+### C. Continuous Reels & 3-Minute Shorts Support
+- Updated `FilterManager.isShortVideo` to recognize up to 180-second (3-minute) Shorts with hashtags and indicators.
+- Continuous vertical paging using diverse short-form queries (`#shorts`, `science #shorts`, `tech #shorts`, `education #shorts`), deduplicated by ID.
+- Honest end-of-feed footers and retry controls.
+
+---
+
+## 11. Final Build & Verification Matrix (V8 + V9)
+
+| Requirement | Implementation Detail | Status | Verification Screenshot |
+| :--- | :--- | :--- | :--- |
+| **In-App Mini-Player (Discover)** | Docked 64 dp player above bottom nav during feed browsing | **VERIFIED** | [`focustube_v8_mini_player_discover.png`](file:///C:/dev/Zeztube/artifacts/focustube_v8_mini_player_discover.png) |
+| **Mini-Player (Search)** | Player persists across tab switches to Search screen | **VERIFIED** | [`focustube_v8_mini_player_search.png`](file:///C:/dev/Zeztube/artifacts/focustube_v8_mini_player_search.png) |
+| **Mini-Player (Library)** | Player persists across tab switches to Library screen | **VERIFIED** | [`focustube_v8_mini_player_library.png`](file:///C:/dev/Zeztube/artifacts/focustube_v8_mini_player_library.png) |
+| **Player Re-expansion** | Tap mini-player to restore full watch page without reload | **VERIFIED** | [`focustube_v8_watch_expanded.png`](file:///C:/dev/Zeztube/artifacts/focustube_v8_watch_expanded.png) |
+| **About Settings Entry** | Settings card for "About FocusTube & Developer" | **VERIFIED** | [`focustube_v8_settings_about_entry.png`](file:///C:/dev/Zeztube/artifacts/focustube_v8_settings_about_entry.png) |
+| **Developer Profile** | Sayan Basani profile, GitHub, LinkedIn, Repo, dynamic version | **VERIFIED** | [`focustube_v8_about_developer.png`](file:///C:/dev/Zeztube/artifacts/focustube_v8_about_developer.png)<br>[`focustube_v8_about_developer_scrolled.png`](file:///C:/dev/Zeztube/artifacts/focustube_v8_about_developer_scrolled.png) |
+| **Discover Feed Diversity** | 3Blue1Brown, Kurzgesagt, TED across diverse topics | **VERIFIED** | [`focustube_v9_discover.png`](file:///C:/dev/Zeztube/artifacts/focustube_v9_discover.png)<br>[`focustube_v9_discover_paginated.png`](file:///C:/dev/Zeztube/artifacts/focustube_v9_discover_paginated.png) |
+| **End-of-Feed Footer** | Honest footer: "You've reached the end of this feed..." | **VERIFIED** | [`focustube_v9_discover_footer.png`](file:///C:/dev/Zeztube/artifacts/focustube_v9_discover_footer.png) |
+| **Continuous Reels** | Cascas Cas -> KidsAtoZ -> Smart Bacche Academy | **VERIFIED** | [`focustube_v9_reels_continuous.png`](file:///C:/dev/Zeztube/artifacts/focustube_v9_reels_continuous.png)<br>[`focustube_v9_reels_swiped.png`](file:///C:/dev/Zeztube/artifacts/focustube_v9_reels_swiped.png)<br>[`focustube_v9_reels_continuous2.png`](file:///C:/dev/Zeztube/artifacts/focustube_v9_reels_continuous2.png) |
+
+---
+
+## 12. Automated Unit Tests & APK Deliverable
 
 ```
 > Task :app:testDebugUnitTest
@@ -277,10 +330,16 @@ PlayerWatchPageTest > testCuratedFallback_includesChannelAvatars PASSED
 PlayerWatchPageTest > testCuratedFallback_includesLiveAndVodStreams PASSED
 PlayerWatchPageTest > testProgressBarThickness_defaultsToThin PASSED
 PlayerWatchPageTest > testLiveStatus_enumAndProperties PASSED
+PlayerWatchPageTest > testDeveloperConstants_valuesAndAttribution PASSED
+PlayerWatchPageTest > testPlayerSheetState_expandedCollapsedHidden PASSED
+PlayerWatchPageTest > testPagedResult_contractProperties PASSED
+PlayerWatchPageTest > testIsShortVideo_supportsUpTo180Seconds PASSED
+PlayerWatchPageTest > testChannelDiversity_limitsConsecutiveVideosFromSameChannel PASSED
 
-BUILD SUCCESSFUL in 11s
-23 tests passed, 0 failed.
+BUILD SUCCESSFUL in 13s
+28 tests passed, 0 failed.
 ```
 
-- **Output Artifact**: `C:\dev\Zeztube\artifacts\FocusTube-debug.apk` (22,169,328 bytes)
-- **Target Device Tested**: `emulator-5554` (Pixel 6, Android 15 / API 35, `com.focustube.app.debug`)
+- **Output Deliverable APK**: [`C:\dev\Zeztube\artifacts\FocusTube-debug.apk`](file:///C:/dev/Zeztube/artifacts/FocusTube-debug.apk) (22,185,557 bytes)
+- **Target Device Tested**: `emulator-5554` (Pixel 6, Android 15 / API 35, package `com.focustube.app.debug`)
+

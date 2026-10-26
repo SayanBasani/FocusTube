@@ -17,6 +17,7 @@ import kotlinx.coroutines.launch
 data class ReelsUiState(
     val isLoading: Boolean = true,
     val isLoadingMore: Boolean = false,
+    val canLoadMore: Boolean = true,
     val reels: List<VideoItem> = emptyList(),
     val currentIndex: Int = 0,
     val likedVideoIds: Set<String> = emptySet(),
@@ -51,13 +52,14 @@ class ReelsViewModel(
             _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
             currentPage = 1
             seenReelIds.clear()
-            val result = videoRepository.getReelsVideos(page = 1)
-            result.onSuccess { list ->
-                val unique = list.filter { seenReelIds.add(it.id) }
+            val result = videoRepository.getReelsVideosPaged(page = 1)
+            result.onSuccess { paged ->
+                val unique = paged.items.filter { seenReelIds.add(it.id) }
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
                     reels = unique,
                     currentIndex = 0,
+                    canLoadMore = paged.hasMore,
                     errorMessage = null
                 )
             }.onFailure { err ->
@@ -70,17 +72,31 @@ class ReelsViewModel(
     }
 
     fun loadMoreReels() {
-        if (_uiState.value.isLoadingMore || _uiState.value.isLoading) return
+        val state = _uiState.value
+        if (state.isLoadingMore || state.isLoading || !state.canLoadMore) return
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoadingMore = true)
-            currentPage++
-            val result = videoRepository.getReelsVideos(page = currentPage)
-            result.onSuccess { list ->
-                val newItems = list.filter { seenReelIds.add(it.id) }
-                _uiState.value = _uiState.value.copy(
-                    isLoadingMore = false,
-                    reels = _uiState.value.reels + newItems
-                )
+            val nextPage = currentPage + 1
+            val result = videoRepository.getReelsVideosPaged(page = nextPage)
+            result.onSuccess { paged ->
+                val newItems = paged.items.filter { seenReelIds.add(it.id) }
+                if (newItems.isNotEmpty()) {
+                    currentPage = nextPage
+                    _uiState.value = _uiState.value.copy(
+                        isLoadingMore = false,
+                        reels = _uiState.value.reels + newItems,
+                        canLoadMore = paged.hasMore
+                    )
+                } else if (paged.hasMore && nextPage < currentPage + 3) {
+                    currentPage = nextPage
+                    _uiState.value = _uiState.value.copy(isLoadingMore = false)
+                    loadMoreReels()
+                } else {
+                    _uiState.value = _uiState.value.copy(
+                        isLoadingMore = false,
+                        canLoadMore = false
+                    )
+                }
             }.onFailure {
                 _uiState.value = _uiState.value.copy(isLoadingMore = false)
             }

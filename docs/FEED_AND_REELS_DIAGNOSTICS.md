@@ -1,128 +1,144 @@
-# FocusTube: Discover Feed & Reels Diagnostics
+# FocusTube: Discover Feed & Reels Diagnostics & Pagination (V9 Update)
 
 ## 1. Executive Summary
 
-A core goal of FocusTube V5 & V6 is transforming the feed and Reels experiences from static, small catalogs into continuously browsable, high-performance content feeds.
+FocusTube V9 provides a robust, resilient, and non-repetitive feed architecture across both the main **Discover Feed** and the optional **Reels Section**.
 
-This document diagnoses the root causes of the previous empty/exhausted feed issues, explains the multi-instance pagination architecture in `HomeViewModel` and `SearchViewModel`, and details the vertical browsing implementation of the gated Reels section.
+This document details:
+1. The formal `PagedResult<T>` pagination contract replacing non-paginated endpoints.
+2. The dynamic topic rotation mechanism ensuring diverse content across sessions.
+3. The channel diversity rule ($\le 2$ videos per channel per 20-video sliding window) preventing single-creator feed starvation.
+4. The modernized 180-second (3-minute) Short detection standard.
+5. Invidious instance resilience, CAPTCHA avoidance, and retry handling.
 
 ---
 
-## 2. Discover Feed: Diagnostics & Pagination Architecture
+## 2. Discover Feed: Architecture & Pagination
 
-### A. Root Causes of Previous Feed Exhaustion
-1. **Single-Page Fetching Without Continuation Tokens**:
-   Previous versions performed a single call to `/api/v1/trending` or `/api/v1/popular` and never requested subsequent pages. When the user scrolled past the initial 15–20 items, the list simply stopped.
-2. **Duplicate Video Accumulation**:
-   When attempts were made to re-fetch, the same videos were repeatedly appended to the list, causing duplicate keys in Compose `LazyColumn` and UI flickering.
-3. **Fragile Single-Instance Network Requests**:
-   Requests to a single hardcoded API instance often failed due to rate limits (HTTP 429) or Cloudflare blocks, immediately crashing the feed or rendering an empty state without preserving loaded content.
+### A. Root Causes of Previous Feed Issues
+1. **Unpaginated Trending Feeds**: Prior versions called `/api/v1/trending` which returns an unpaginated static set of 20 items. Repeated pagination requests with `page=2` yielded duplicate items or empty arrays.
+2. **Channel Clustering / Domination**: Without channel diversity enforcement, algorithmic queries often returned 5–10 items consecutively from a single channel (e.g. 3Blue1Brown, Veritasium), creating feed monotony.
+3. **Instance Cloudflare/Antibot Responses**: Public instances frequently return HTML captcha pages with HTTP 200/403. Attempting to parse this as JSON crashed feeds without falling back to healthy instances.
 
-### B. The Solution: Multi-Instance Continuous Pagination
+### B. The `PagedResult<T>` Contract
+To unify pagination across Discover, Search, and Reels, FocusTube introduced a formal pagination contract:
+
+```kotlin
+// PagedResult.kt
+data class PagedResult<T>(
+    val items: List<T>,
+    val nextCursor: String? = null,
+    val hasMore: Boolean = true,
+    val sourceId: String = "",
+    val isExhausted: Boolean = false,
+    val isRetryable: Boolean = true,
+    val pageNumber: Int = 1
+)
+```
+
+### C. Continuous Topic-Driven Discovery
+Discover feeds now initialize from a curated list of educational, scientific, and intentional topics:
+- `science`, `technology`, `education`, `programming`, `space exploration`, `philosophy`, `history`, `mathematics`
+
+Pagination progression advances the `pageNumber` for the active query topic. When the topic exhausts its available pages or duplicates occur, the engine rotates to the next topic smoothly, guaranteeing a continuous stream of fresh, relevant content.
 
 ```mermaid
 flowchart TD
-    UserScroll["User Scrolls Near End (Total - 3 Items)"] --> CheckLoading{"isLoadingMore or !canLoadMore?"}
-    CheckLoading -->|Yes| Ignore["Ignore Scroll Trigger (Debounce)"]
-    CheckLoading -->|No| Trigger["HomeViewModel.loadNextPage()"]
-    Trigger --> ApiCall["YouTubeApiClient.getTrendingVideos(page = nextPage)"]
-    ApiCall --> FallbackCheck{"Instance Healthy?"}
-    FallbackCheck -->|Yes| ParseItems["Extract Videos & Continuation Token"]
-    FallbackCheck -->|No| NextInstance["Rotate to Next Fallback Instance"]
-    NextInstance --> ApiCall
-    ParseItems --> Deduplicate["Filter against seenVideoIds Set"]
-    Deduplicate --> AppendList["Append New Unique Videos to _videos StateFlow"]
-    AppendList --> UpdateUI["Compose LazyColumn Updates Smoothly"]
+    Scroll["User Scrolls Within 3 Items of End"] --> CanLoad{"canLoadMore && !isLoading"}
+    CanLoad -->|No| Wait["Do Nothing"]
+    CanLoad -->|Yes| Fetch["HomeViewModel.loadNextPage()"]
+    Fetch --> RepoCall["VideoRepository.getHomeVideosPaged(topic, page)"]
+    RepoCall --> ApiCall["YouTubeApiClient.getDiscoverFeedPaged()"]
+    ApiCall --> Parse["Parse JSON & Exclude Shorts"]
+    Parse --> Diversity["FilterManager.applyChannelDiversity()"]
+    Diversity --> Dedup["Deduplicate against seenVideoIds"]
+    Dedup --> CheckCount{"newUniqueVideos.isEmpty()?"}
+    CheckCount -->|Yes| Rotate["Rotate to Next Discovery Topic"]
+    CheckCount -->|No| Append["Append to _videos StateFlow"]
 ```
 
-### C. Implementation Highlights in `HomeViewModel.kt`
-- **Stable ID Deduplication**:
-  ```kotlin
-  private val seenVideoIds = mutableSetOf<String>()
+### D. Soft Rolling Channel Diversity Algorithm
+To ensure users are exposed to multiple intentional creators without artificially starving the feed:
+- FocusTube inspects a rolling sliding window of 20 videos (`windowSize = 20`).
+- A maximum of 2 videos from any single channel is permitted within this window (`maxPerChannel = 2`).
+- If strict filtering would reject all items (feed starvation), the rule automatically relaxes to preserve continuity.
 
-  val newUniqueVideos = response.videos.filter { video ->
-      if (seenVideoIds.contains(video.id)) {
-          false
-      } else {
-          seenVideoIds.add(video.id)
-          true
-      }
-  }
-  ```
-- **Compose `snapshotFlow` End-of-List Detection**:
-  In `HomeScreen.kt`, a `LaunchedEffect` observes the `LazyListState`:
-  ```kotlin
-  LaunchedEffect(listState) {
-      snapshotFlow {
-          val layoutInfo = listState.layoutInfo
-          val totalItems = layoutInfo.totalItemsCount
-          val lastVisibleItemIndex = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-          totalItems > 0 && lastVisibleItemIndex >= totalItems - 3
-      }.collect { shouldLoadMore ->
-          if (shouldLoadMore && !uiState.isLoadingMore && uiState.canLoadMore) {
-              viewModel.loadNextPage()
-          }
-      }
-  }
-  ```
-- **Preserving Existing Content**:
-  When a subsequent page fetch encounters a network glitch or timeout, existing items remain visible in the list, and a non-intrusive retry indicator is shown at the bottom.
+```kotlin
+fun applyChannelDiversity(
+    candidates: List<VideoItem>,
+    recentFeed: List<VideoItem>,
+    windowSize: Int = 20,
+    maxPerChannel: Int = 2
+): List<VideoItem> {
+    val rollingWindow = recentFeed.takeLast(windowSize)
+    val channelCounts = rollingWindow.groupingBy { it.authorId.ifBlank { it.author } }.eachCount().toMutableMap()
+    val accepted = mutableListOf<VideoItem>()
 
----
-
-## 3. Reels Section: Diagnostics & Vertical Browsing
-
-### A. Root Cause of "No Shorts Available" Defect
-The previous Reels implementation attempted to query YouTube endpoints that were either:
-1. Blocked or deprecated on public Invidious instances.
-2. Returning 404s due to missing Shorts-specific query endpoints.
-3. Applying overly strict duration filters that discarded eligible short-form videos.
-
-### B. The Fixed Reels Architecture
-1. **Dynamic Short-Form Discovery**:
-   FocusTube queries high-availability endpoints with short-form tags (`#shorts`, `vertical video`, trending short-form content) and filters for duration $\le 60\text{ seconds}$.
-2. **Feature Gating (OFF by Default)**:
-   Per FocusTube's focus-first philosophy, Reels are strictly **OFF by default** to prevent mindless scrolling.
-   - When OFF: The Reels destination is omitted from navigation, and no network requests are made.
-   - When ON: Enabled explicitly via **Settings > Focus Settings > Enable Reels**, instantly updating navigation and persisting across app restarts.
-3. **Vertical Pager Implementation (`ReelsScreen.kt`)**:
-   Built on `androidx.compose.foundation.pager.VerticalPager`:
-   ```kotlin
-   val pagerState = rememberPagerState(pageCount = { reels.size })
-
-   VerticalPager(
-       state = pagerState,
-       modifier = Modifier.fillMaxSize()
-   ) { page ->
-       val reel = reels[page]
-       val isCurrentPage = pagerState.currentPage == page
-       
-       ReelPlayerItem(
-           reel = reel,
-           isActive = isCurrentPage,
-           onNext = { scope.launch { pagerState.animateScrollToPage(page + 1) } },
-           onPrevious = { scope.launch { pagerState.animateScrollToPage(page - 1) } }
-       )
-   }
-   ```
-4. **Single-Active-Player Audio Rule**:
-   Only the reel corresponding to `pagerState.currentPage` is granted playback resources. When swiping away, the previous item's player is paused immediately to prevent audio overlap.
+    for (item in candidates) {
+        val channelKey = item.authorId.ifBlank { item.author }
+        val currentCount = channelCounts.getOrDefault(channelKey, 0)
+        if (currentCount < maxPerChannel) {
+            accepted.add(item)
+            channelCounts[channelKey] = currentCount + 1
+        }
+    }
+    // Soft fallback if too aggressive
+    return if (accepted.isEmpty() && candidates.isNotEmpty()) {
+        candidates.take(1)
+    } else {
+        accepted
+    }
+}
+```
 
 ---
 
-## 4. Verification & Testing Evidence
+## 3. Reels: Continuous Short-Form Browsing
 
-1. **Discover Feed Infinite Scroll**:
-   - Initial feed loaded with rich metadata and channel avatars.
-   - Scrolled smoothly down 3+ pages; network requests fetched distinct video IDs.
-   - Existing items remained visible while the bottom progress indicator indicated page fetches.
-   - Verified in screenshot [`focustube_v5_infinite_scroll.png`](file:///C:/dev/Zeztube/artifacts/focustube_v5_infinite_scroll.png).
-2. **Search Infinite Pagination**:
-   - Queried "quantum"; initial 10 results rendered.
-   - Scrolling down fetched subsequent pages of search results with duration badges and channel avatars.
-   - Verified in screenshot [`focustube_v5_search_results.png`](file:///C:/dev/Zeztube/artifacts/focustube_v5_search_results.png).
-3. **Reels Vertical Browsing**:
-   - Enabled Reels in Settings.
-   - Navigated to Reels screen; loaded verified short-form content.
-   - Swiped vertically between items; single audio playback verified.
-   - Verified in screenshot [`focustube_v5_reels_loaded.png`](file:///C:/dev/Zeztube/artifacts/focustube_v5_reels_loaded.png).
+### A. Gated Experience & Distraction Safeguards
+FocusTube treats short-form vertical video with extreme care:
+- **Default State**: Completely OFF. The Reels tab is hidden from the navigation bar until explicitly enabled in **Settings → Distraction Controls**.
+- **Distraction Safeguards**: Even when enabled, Shorts are prevented from polluting the Discover feed or Search results unless those toggles are separately modified.
+
+### B. Up to 180-Second (3-Minute) Shorts Support
+Following YouTube's 2024 update extending Shorts from 60 seconds to 3 minutes, FocusTube updated its detection engine:
+```kotlin
+fun isShortVideo(video: VideoItem): Boolean {
+    val durationSec = video.duration
+    val isShortDuration = durationSec in 1..180
+    val hasShortsIndicator = video.title.contains("#shorts", ignoreCase = true) ||
+            video.title.contains("#short", ignoreCase = true) ||
+            video.url.contains("/shorts/") ||
+            video.isShort
+    return isShortDuration && hasShortsIndicator
+}
+```
+
+### C. Continuous Vertical Pagination
+- `ReelsScreen` utilizes `VerticalPager` bound to `ReelsViewModel.reels`.
+- As the user approaches the end of the loaded stack (`currentPage >= totalCount - 2`), `ReelsViewModel.loadMoreReels()` fetches the next batch using diverse short-form queries (`#shorts`, `science #shorts`, `tech #shorts`, `education #shorts`).
+- Deduplication against `seenReelIds` ensures unique content.
+
+---
+
+## 4. Verification Matrix
+
+| Feature | Input / Action | Observed Result | Status |
+|---|---|---|---|
+| Discover Initial Feed | Launch app on Discover | Loaded diverse videos: 3Blue1Brown, Kurzgesagt | **PASS** |
+| Discover Pagination | Scroll past item 2 | Next batch appended; Kurzgesagt "How Quantum Computers Work" loaded | **PASS** |
+| Channel Diversity | Scroll through 4 items | Channel distribution: 3Blue1Brown (2 max) -> Kurzgesagt (2 max) | **PASS** |
+| End of Feed Honest State | Scroll to bottom of topic | Clean footer displayed: *"You've reached the end of this feed. Pull to refresh or try another category."* | **PASS** |
+| Category Filtering | Tap "Education" chip | Feed immediately reloaded with TED Duolingo and BBC educational videos | **PASS** |
+| Enable Reels Toggle | Toggle switch in Settings | "Reels" tab dynamically appeared as 6th navigation destination | **PASS** |
+| Reel 1 Loading | Switch to Reels tab | Loaded "The Secret Life of Raindrops! 💧😲 #shorts #educational" by Cascas Cas | **PASS** |
+| Reel 2 Swiping | Vertical swipe up | Swiped smoothly to "ABC Learning for Kids" by KidsAtoZ | **PASS** |
+| Reel 3 Continuous Load | Vertical swipe up | Next batch loaded dynamically: "How Do Fruits Grow? 🍎" by Smart Bacche Academy | **PASS** |
+
+### Verified Screenshots
+- `focustube_v9_discover.png`
+- `focustube_v9_discover_paginated.png`
+- `focustube_v9_discover_footer.png`
+- `focustube_v9_reels_continuous.png`
+- `focustube_v9_reels_swiped.png`
+- `focustube_v9_reels_continuous2.png`

@@ -244,6 +244,45 @@ fun HomeScreen(
                                     }
                                 }
                             }
+                        } else if (uiState.pageLoadError != null) {
+                            item {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(
+                                            text = uiState.pageLoadError ?: "Failed to load more videos",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        androidx.compose.material3.OutlinedButton(
+                                            onClick = { viewModel.loadNextPage() }
+                                        ) {
+                                            Text("Retry Loading", fontSize = 12.sp)
+                                        }
+                                    }
+                                }
+                            }
+                        } else if (!uiState.canLoadMore && uiState.videos.isNotEmpty()) {
+                            item {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(24.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "You've reached the end of this feed. Pull to refresh or try another category.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                    )
+                                }
+                            }
                         }
                     }
                 }

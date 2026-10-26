@@ -3,8 +3,10 @@ package com.focustube.app.data.network
 import com.focustube.app.data.model.CommentItem
 import com.focustube.app.data.model.CommentStatus
 import com.focustube.app.data.model.LiveStatus
+import com.focustube.app.data.model.PagedResult
 import com.focustube.app.data.model.VideoCommentsData
 import com.focustube.app.data.model.VideoItem
+import com.focustube.app.data.repository.FilterManager
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -49,82 +51,44 @@ class YouTubeApiClient {
         activePipedIndex = (activePipedIndex + 1) % pipedInstances.size
     }
 
-    suspend fun getTrendingVideos(page: Int = 1, category: String = "All"): Result<List<VideoItem>> = withContext(Dispatchers.IO) {
-        // Try Piped trending first
-        for (i in pipedInstances.indices) {
-            val url = "${getPipedBase()}/trending?region=US"
-            try {
-                val req = Request.Builder()
-                    .url(url)
-                    .header("User-Agent", "FocusTube/1.0 (Android)")
-                    .build()
-                client.newCall(req).execute().use { res ->
-                    if (res.isSuccessful) {
-                        val body = res.body?.string() ?: ""
-                        val items = parseVideoList(body)
-                        if (items.isNotEmpty()) {
-                            return@withContext Result.success(items)
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                rotatePiped()
-            }
-        }
+    companion object {
+        val DISCOVERY_TOPICS = listOf(
+            "science physics exploration",
+            "technology engineering computer",
+            "educational documentary explainer",
+            "programming software artificial intelligence",
+            "space astronomy cosmos",
+            "history ancient civilization documentary",
+            "philosophy ethics critical thinking",
+            "mathematics puzzle geometry"
+        )
 
-        // Try Invidious trending
-        for (i in invidiousInstances.indices) {
-            val typeParam = when (category.lowercase()) {
-                "music" -> "music"
-                "gaming" -> "gaming"
-                "news" -> "news"
-                "movies" -> "movies"
-                else -> "default"
-            }
-            val url = "${getInvidiousBase()}/api/v1/trending?type=$typeParam"
-            try {
-                val req = Request.Builder()
-                    .url(url)
-                    .header("User-Agent", "FocusTube/1.0 (Android)")
-                    .build()
-                client.newCall(req).execute().use { res ->
-                    if (res.isSuccessful) {
-                        val body = res.body?.string() ?: ""
-                        val items = parseVideoList(body)
-                        if (items.isNotEmpty()) {
-                            return@withContext Result.success(items)
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                rotateInvidious()
-            }
-        }
-
-        // Offline curated fallback with pagination support
-        val fallback = getCuratedEducationalFallback()
-        val filtered = if (category == "All") {
-            fallback
-        } else {
-            fallback.filter { it.title.contains(category, ignoreCase = true) || it.description.contains(category, ignoreCase = true) }
-                .ifEmpty { fallback }
-        }
-        val pageSize = 6
-        val startIndex = ((page - 1) * pageSize).coerceAtMost(filtered.size)
-        val endIndex = (startIndex + pageSize).coerceAtMost(filtered.size)
-        val paginated = if (startIndex < filtered.size) filtered.subList(startIndex, endIndex) else emptyList()
-        Result.success(if (paginated.isNotEmpty()) paginated else filtered.take(pageSize))
+        val REELS_TOPICS = listOf(
+            "#shorts educational",
+            "science #shorts",
+            "technology #shorts",
+            "history facts #shorts",
+            "curiosity #shorts",
+            "coding #shorts",
+            "life hacks #shorts"
+        )
     }
 
-    suspend fun searchVideos(
+    /**
+     * Searches videos using a formal PagedResult contract.
+     * Supports Invidious page-based pagination and Piped nextpage cursor pagination.
+     */
+    suspend fun searchVideosPaged(
         query: String,
         page: Int = 1,
         nextPageToken: String? = null
-    ): Result<Pair<List<VideoItem>, String?>> = withContext(Dispatchers.IO) {
+    ): Result<PagedResult<VideoItem>> = withContext(Dispatchers.IO) {
         val cleanQuery = query.trim()
-        if (cleanQuery.isEmpty()) return@withContext Result.success(Pair(emptyList(), null))
+        if (cleanQuery.isEmpty()) {
+            return@withContext Result.success(PagedResult.empty("empty_query", isExhausted = true))
+        }
 
-        // 1. Try Piped search with nextpage token support
+        // 1. Try Piped search if token available or first attempt
         for (i in pipedInstances.indices) {
             val url = if (!nextPageToken.isNullOrEmpty()) {
                 "${getPipedBase()}/nextpage/search?nextpage=${URLEncoder.encode(nextPageToken, "UTF-8")}&q=${URLEncoder.encode(cleanQuery, "UTF-8")}&filter=videos"
@@ -139,11 +103,21 @@ class YouTubeApiClient {
                 client.newCall(req).execute().use { res ->
                     if (res.isSuccessful) {
                         val body = res.body?.string() ?: ""
-                        val parsed = JsonParser.parseString(body)
-                        val items = parseVideoList(body)
-                        val nextToken = if (parsed.isJsonObject) parsed.asJsonObject.get("nextpage")?.asString else null
-                        if (items.isNotEmpty()) {
-                            return@withContext Result.success(Pair(items, nextToken))
+                        if (!body.startsWith("<")) {
+                            val parsed = JsonParser.parseString(body)
+                            val items = parseVideoList(body)
+                            val nextToken = if (parsed.isJsonObject) parsed.asJsonObject.get("nextpage")?.asString else null
+                            if (items.isNotEmpty()) {
+                                return@withContext Result.success(
+                                    PagedResult(
+                                        items = items,
+                                        nextCursor = nextToken,
+                                        hasMore = nextToken != null || items.size >= 10,
+                                        sourceId = "piped:${getPipedBase()}",
+                                        pageNumber = page
+                                    )
+                                )
+                            }
                         }
                     }
                 }
@@ -152,7 +126,7 @@ class YouTubeApiClient {
             }
         }
 
-        // 2. Try Invidious search
+        // 2. Try Invidious search with real page advance
         for (i in invidiousInstances.indices) {
             val url = "${getInvidiousBase()}/api/v1/search?q=${URLEncoder.encode(cleanQuery, "UTF-8")}&type=video&page=$page"
             try {
@@ -163,9 +137,21 @@ class YouTubeApiClient {
                 client.newCall(req).execute().use { res ->
                     if (res.isSuccessful) {
                         val body = res.body?.string() ?: ""
-                        val items = parseVideoList(body)
-                        if (items.isNotEmpty()) {
-                            return@withContext Result.success(Pair(items, null))
+                        if (!body.startsWith("<")) {
+                            val items = parseVideoList(body)
+                            if (items.isNotEmpty()) {
+                                val hasMore = items.size >= 8
+                                val nextCursor = if (hasMore) (page + 1).toString() else null
+                                return@withContext Result.success(
+                                    PagedResult(
+                                        items = items,
+                                        nextCursor = nextCursor,
+                                        hasMore = hasMore,
+                                        sourceId = "invidious:${getInvidiousBase()}",
+                                        pageNumber = page
+                                    )
+                                )
+                            }
                         }
                     }
                 }
@@ -174,13 +160,141 @@ class YouTubeApiClient {
             }
         }
 
-        // 3. Offline curated fallback for search
+        // 3. Curated Fallback (Offline only - finite, not endless)
         val matches = getCuratedEducationalFallback().filter {
             it.title.contains(cleanQuery, ignoreCase = true) ||
             it.channelName.contains(cleanQuery, ignoreCase = true) ||
             it.description.contains(cleanQuery, ignoreCase = true)
         }
-        Result.success(Pair(matches.ifEmpty { getCuratedEducationalFallback().take(4) }, null))
+        val fallbackItems = matches.ifEmpty { getCuratedEducationalFallback().take(4) }
+        Result.success(
+            PagedResult(
+                items = fallbackItems,
+                nextCursor = null,
+                hasMore = false,
+                sourceId = "offline_curated",
+                isExhausted = true,
+                isRetryable = false,
+                pageNumber = page
+            )
+        )
+    }
+
+    /**
+     * Continuous Discover feed pagination strategy combining seed sources with topic rotation.
+     * Prevents feed exhaustion while delivering rich domain diversity.
+     */
+    suspend fun getDiscoverFeedPaged(
+        category: String = "All",
+        pageIndex: Int = 1,
+        cursor: String? = null
+    ): Result<PagedResult<VideoItem>> = withContext(Dispatchers.IO) {
+        if (category != "All") {
+            val query = when (category.lowercase()) {
+                "documentaries" -> "documentary explainer"
+                else -> "$category educational"
+            }
+            return@withContext searchVideosPaged(query, page = pageIndex, nextPageToken = cursor)
+        }
+
+        // For "All" Category:
+        // Page 1: First try genuine trending seed. If trending returns items, yield them.
+        if (pageIndex == 1) {
+            for (i in invidiousInstances.indices) {
+                val url = "${getInvidiousBase()}/api/v1/trending?type=default"
+                try {
+                    val req = Request.Builder()
+                        .url(url)
+                        .header("User-Agent", "FocusTube/1.0 (Android)")
+                        .build()
+                    client.newCall(req).execute().use { res ->
+                        if (res.isSuccessful) {
+                            val body = res.body?.string() ?: ""
+                            if (!body.startsWith("<")) {
+                                val items = parseVideoList(body)
+                                if (items.isNotEmpty()) {
+                                    return@withContext Result.success(
+                                        PagedResult(
+                                            items = items,
+                                            nextCursor = "2",
+                                            hasMore = true,
+                                            sourceId = "trending:${getInvidiousBase()}",
+                                            pageNumber = 1
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    rotateInvidious()
+                }
+            }
+        }
+
+        // Subsequent pages or trending fallback: rotate across diverse discovery topics
+        val effectiveIndex = if (pageIndex == 1) 0 else pageIndex - 2
+        val topicIdx = effectiveIndex % DISCOVERY_TOPICS.size
+        val topicPage = (effectiveIndex / DISCOVERY_TOPICS.size) + 1
+        val topicQuery = DISCOVERY_TOPICS[topicIdx]
+
+        searchVideosPaged(topicQuery, page = topicPage, nextPageToken = cursor)
+    }
+
+    /**
+     * Continuous Reels short-form feed discovery strategy.
+     * Rotates varied short-form queries and validates short-form candidate eligibility.
+     */
+    suspend fun getReelsPaged(
+        pageIndex: Int = 1,
+        cursor: String? = null
+    ): Result<PagedResult<VideoItem>> = withContext(Dispatchers.IO) {
+        val topicIdx = (pageIndex - 1) % REELS_TOPICS.size
+        val topicPage = ((pageIndex - 1) / REELS_TOPICS.size) + 1
+        val topicQuery = REELS_TOPICS[topicIdx]
+
+        val result = searchVideosPaged(topicQuery, page = topicPage, nextPageToken = cursor)
+        result.map { paged ->
+            val extracted = FilterManager.extractReels(paged.items)
+            if (extracted.isNotEmpty()) {
+                paged.copy(
+                    items = extracted,
+                    hasMore = true,
+                    nextCursor = (pageIndex + 1).toString()
+                )
+            } else if (paged.sourceId == "offline_curated") {
+                // Honest offline fallback: finite, not infinite
+                PagedResult(
+                    items = getCuratedShorts(),
+                    nextCursor = null,
+                    hasMore = false,
+                    isExhausted = true,
+                    isRetryable = false,
+                    sourceId = "offline_shorts",
+                    pageNumber = pageIndex
+                )
+            } else {
+                // If filter was too strict on this topic, provide eligible short candidates
+                val shortCandidates = paged.items.filter { it.durationSeconds in 1..180 || it.isShort }
+                paged.copy(
+                    items = shortCandidates.ifEmpty { getCuratedShorts() },
+                    hasMore = true,
+                    nextCursor = (pageIndex + 1).toString()
+                )
+            }
+        }
+    }
+
+    suspend fun getTrendingVideos(page: Int = 1, category: String = "All"): Result<List<VideoItem>> {
+        return getDiscoverFeedPaged(category, pageIndex = page).map { it.items }
+    }
+
+    suspend fun searchVideos(
+        query: String,
+        page: Int = 1,
+        nextPageToken: String? = null
+    ): Result<Pair<List<VideoItem>, String?>> = withContext(Dispatchers.IO) {
+        searchVideosPaged(query, page, nextPageToken).map { Pair(it.items, it.nextCursor) }
     }
 
     suspend fun searchVideos(query: String): Result<List<VideoItem>> {
@@ -405,7 +519,8 @@ class YouTubeApiClient {
 
                 // Detect shorts
                 val isShort = obj.get("isShort")?.asBoolean == true ||
-                    (lengthSec in 1..60 && (title.contains(Regex("(?i)#shorts?|#reel")) || desc.contains(Regex("(?i)#shorts?"))))
+                    obj.get("type")?.asString == "short" ||
+                    (lengthSec in 1..180 && (title.contains(Regex("(?i)\\bshorts?\\b|#shorts?\\b|#reel\\b")) || desc.contains(Regex("(?i)\\bshorts?\\b|#shorts?\\b|#reel\\b"))))
 
                 val thumb = obj.get("thumbnail")?.asString
                     ?: "https://img.youtube.com/vi/$id/hqdefault.jpg"

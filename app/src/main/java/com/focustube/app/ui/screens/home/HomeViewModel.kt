@@ -17,7 +17,8 @@ data class HomeUiState(
     val canLoadMore: Boolean = true,
     val selectedCategory: String = "All",
     val videos: List<VideoItem> = emptyList(),
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val pageLoadError: String? = null
 )
 
 class HomeViewModel(
@@ -57,27 +58,38 @@ class HomeViewModel(
         if (state.isLoading || state.isLoadingMore || !state.canLoadMore) return
 
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoadingMore = true)
+            _uiState.value = _uiState.value.copy(isLoadingMore = true, pageLoadError = null)
             val nextPage = currentPage + 1
-            val result = videoRepository.getHomeVideos(state.selectedCategory, page = nextPage)
-            result.onSuccess { newList ->
-                val distinctNew = newList.filter { it.id !in seenVideoIds }
+            val result = videoRepository.getHomeVideosPaged(state.selectedCategory, page = nextPage, existingVideos = state.videos)
+            result.onSuccess { paged ->
+                val distinctNew = paged.items.filter { it.id !in seenVideoIds }
                 if (distinctNew.isEmpty()) {
-                    _uiState.value = _uiState.value.copy(
-                        isLoadingMore = false,
-                        canLoadMore = false
-                    )
+                    // If this batch had only duplicates but more pages are available, attempt bounded next page
+                    if (paged.hasMore && nextPage < currentPage + 3) {
+                        currentPage = nextPage
+                        _uiState.value = _uiState.value.copy(isLoadingMore = false)
+                        loadNextPage()
+                    } else {
+                        _uiState.value = _uiState.value.copy(
+                            isLoadingMore = false,
+                            canLoadMore = false
+                        )
+                    }
                 } else {
                     currentPage = nextPage
                     seenVideoIds.addAll(distinctNew.map { it.id })
                     _uiState.value = _uiState.value.copy(
                         isLoadingMore = false,
                         videos = state.videos + distinctNew,
-                        canLoadMore = true
+                        canLoadMore = paged.hasMore,
+                        pageLoadError = null
                     )
                 }
-            }.onFailure {
-                _uiState.value = _uiState.value.copy(isLoadingMore = false)
+            }.onFailure { err ->
+                _uiState.value = _uiState.value.copy(
+                    isLoadingMore = false,
+                    pageLoadError = err.localizedMessage ?: "Failed to load more content"
+                )
             }
         }
     }
@@ -88,17 +100,18 @@ class HomeViewModel(
 
     private fun loadVideos(category: String) {
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
-            val result = videoRepository.getHomeVideos(category, page = 1)
-            result.onSuccess { list ->
+            _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null, pageLoadError = null)
+            val result = videoRepository.getHomeVideosPaged(category, page = 1)
+            result.onSuccess { paged ->
                 seenVideoIds.clear()
-                seenVideoIds.addAll(list.map { it.id })
+                seenVideoIds.addAll(paged.items.map { it.id })
                 currentPage = 1
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
-                    videos = list,
-                    canLoadMore = list.isNotEmpty(),
-                    errorMessage = null
+                    videos = paged.items,
+                    canLoadMore = paged.hasMore,
+                    errorMessage = null,
+                    pageLoadError = null
                 )
             }.onFailure { err ->
                 _uiState.value = _uiState.value.copy(
